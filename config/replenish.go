@@ -9,7 +9,12 @@
 // 供管理面板展示补号历史。
 package config
 
-import "errors"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"strings"
+)
 
 // ReplenishConfig 保存在线补号的全部配置与最近一次运行的状态。
 type ReplenishConfig struct {
@@ -24,10 +29,19 @@ type ReplenishConfig struct {
 	BatchCount      int  `json:"batchCount,omitempty"`      // 每次补号购买的 Key 数量
 	IntervalSeconds int  `json:"intervalSeconds,omitempty"` // 自动检查间隔（秒），最小 60
 
+	// 推送式补号（供应商 webhook）
+	// PublicBaseURL 是本服务的公网基地址（如 https://my-proxy.example.com），
+	// 用于拼接注册给供应商的回调地址。WebhookSecret 是回调路径内嵌的随机密钥，
+	// 供应商推送时不携带管理密码或客户端 Key，路径密钥即该入站端点的唯一鉴权。
+	PublicBaseURL string `json:"publicBaseUrl,omitempty"` // 本服务公网基地址
+	WebhookSecret string `json:"webhookSecret,omitempty"` // 入站回调路径密钥（自动生成）
+
 	// 运行态（随每次补号更新并持久化）
-	LastRunAt  int64  `json:"lastRunAt,omitempty"`  // 上次补号执行时间（Unix 秒）
-	LastError  string `json:"lastError,omitempty"`  // 上次补号错误（成功时清空）
-	LastResult string `json:"lastResult,omitempty"` // 上次补号结果摘要
+	LastRunAt      int64  `json:"lastRunAt,omitempty"`      // 上次补号执行时间（Unix 秒）
+	LastError      string `json:"lastError,omitempty"`      // 上次补号错误（成功时清空）
+	LastResult     string `json:"lastResult,omitempty"`     // 上次补号结果摘要
+	LastWebhookAt  int64  `json:"lastWebhookAt,omitempty"`  // 上次收到供应商 webhook 的时间（Unix 秒）
+	LastWebhookMsg string `json:"lastWebhookMsg,omitempty"` // 上次 webhook 事件摘要
 }
 
 // GetReplenishConfig 返回补号配置的副本。未初始化时返回零值。
@@ -65,7 +79,48 @@ func UpdateReplenishSettings(rc ReplenishConfig) error {
 	cfg.Replenish.MinPoolSize = rc.MinPoolSize
 	cfg.Replenish.BatchCount = rc.BatchCount
 	cfg.Replenish.IntervalSeconds = rc.IntervalSeconds
+	cfg.Replenish.PublicBaseURL = strings.TrimRight(strings.TrimSpace(rc.PublicBaseURL), "/")
 	return Save()
+}
+
+// GetOrCreateReplenishWebhookSecret 返回入站回调路径密钥；若尚未生成则创建并持久化。
+// 密钥为 32 字节随机的十六进制串，用于 /replenish/webhook/<secret> 的路径鉴权。
+func GetOrCreateReplenishWebhookSecret() (string, error) {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return "", errors.New("config not initialized")
+	}
+	if cfg.Replenish.WebhookSecret != "" {
+		return cfg.Replenish.WebhookSecret, nil
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	cfg.Replenish.WebhookSecret = hex.EncodeToString(buf)
+	if err := Save(); err != nil {
+		return "", err
+	}
+	return cfg.Replenish.WebhookSecret, nil
+}
+
+// ResetReplenishWebhookSecret 重新生成回调路径密钥并持久化，使旧回调地址立即失效。
+func ResetReplenishWebhookSecret() (string, error) {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return "", errors.New("config not initialized")
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	cfg.Replenish.WebhookSecret = hex.EncodeToString(buf)
+	if err := Save(); err != nil {
+		return "", err
+	}
+	return cfg.Replenish.WebhookSecret, nil
 }
 
 // RecordReplenishRun 持久化一次补号运行的结果（运行态字段）。
@@ -79,5 +134,17 @@ func RecordReplenishRun(at int64, result, errMsg string) error {
 	cfg.Replenish.LastRunAt = at
 	cfg.Replenish.LastResult = result
 	cfg.Replenish.LastError = errMsg
+	return Save()
+}
+
+// RecordReplenishWebhook 持久化一次收到供应商 webhook 的时间与摘要。
+func RecordReplenishWebhook(at int64, msg string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	cfg.Replenish.LastWebhookAt = at
+	cfg.Replenish.LastWebhookMsg = msg
 	return Save()
 }

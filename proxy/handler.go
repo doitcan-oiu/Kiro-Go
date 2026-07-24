@@ -416,6 +416,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Write([]byte(`{"status":"ok"}`))
 
+	// 公开入站 webhook：供应商推送补号事件。无管理密码，由路径内嵌 secret 鉴权。
+	case strings.HasPrefix(path, "/replenish/webhook/") && r.Method == "POST":
+		secret := strings.TrimPrefix(path, "/replenish/webhook/")
+		h.handleReplenishWebhook(w, r, secret)
+
 	// 管理端点
 	case path == "/admin" || path == "/admin/":
 		h.serveAdminPage(w, r)
@@ -2534,6 +2539,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiTestReplenish(w, r)
 	case path == "/replenish/run" && r.Method == "POST":
 		h.apiRunReplenish(w, r)
+	case path == "/replenish/register-webhook" && r.Method == "POST":
+		h.apiRegisterReplenishWebhook(w, r)
+	case path == "/replenish/reset-secret" && r.Method == "POST":
+		h.apiResetReplenishSecret(w, r)
 	case path == "/status" && r.Method == "GET":
 		h.apiGetStatus(w, r)
 	case path == "/settings" && r.Method == "GET":

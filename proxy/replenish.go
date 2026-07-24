@@ -154,6 +154,12 @@ func (c *supplierClient) Purchase(count int, clientOrderID string) (*supplierPur
 	return &r, nil
 }
 
+// SetWebhook 通过 PUT /api/my/webhook 把回调地址注册到供应商。
+func (c *supplierClient) SetWebhook(webhookURL string) error {
+	body := map[string]interface{}{"webhook_url": webhookURL}
+	return c.do(http.MethodPut, "/api/my/webhook", body, nil)
+}
+
 // newClientOrderID 生成 32 位十六进制订单号（16 字节随机）。
 func newClientOrderID() string {
 	buf := make([]byte, 16)
@@ -206,7 +212,13 @@ func (h *Handler) runReplenishOnce(count int) (*replenishResult, error) {
 		count = maxStock
 	}
 
-	orderID := newClientOrderID()
+	return h.purchaseAndImport(client, rc, count, newClientOrderID())
+}
+
+// purchaseAndImport 用指定订单号购买 count 个 Key 并导入账号池，返回结构化结果。
+// 推送式补号（webhook）会传入供应商事件里的 purchase_order_id 作为订单号，
+// 借助供应商侧幂等，webhook 重试不会重复扣费。调用方需自行持有 replenishMu。
+func (h *Handler) purchaseAndImport(client *supplierClient, rc config.ReplenishConfig, count int, orderID string) (*replenishResult, error) {
 	purchase, err := client.Purchase(count, orderID)
 	if err != nil {
 		return nil, err
@@ -326,4 +338,61 @@ func (h *Handler) maybeReplenish() {
 	}
 	_ = config.RecordReplenishRun(now, res.Summary, "")
 	logger.Infof("[Replenish] auto run: %s", res.Summary)
+}
+
+// supplierWebhookEvent 是供应商推送的 webhook 载荷（对接文档.md）。
+// new_keys_available 携带 purchase_order_id，自动提取时必须原样作为
+// client_order_id 提取该批 Key；all_keys_dead 仅作通知。
+type supplierWebhookEvent struct {
+	Event           string `json:"event"`
+	EventID         string `json:"event_id"`
+	PurchaseOrderID string `json:"purchase_order_id"`
+	Message         string `json:"message"`
+	NewKeys         int    `json:"new_keys"`
+	Dead            int    `json:"dead"`
+}
+
+// handleReplenishWebhookEvent 处理一条供应商 webhook 事件：
+//   - new_keys_available：用事件里的 purchase_order_id 作为订单号提取并导入这批 Key；
+//     供应商侧幂等保证 webhook 重试不会重复扣费。
+//   - all_keys_dead：仅记录，池会在下一轮低水位或后续事件时补充。
+//
+// 返回人类可读摘要写入运行态供面板展示。购买/导入错误会返回 error 但仍记录摘要。
+func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, error) {
+	switch ev.Event {
+	case "new_keys_available":
+		count := ev.NewKeys
+		if count <= 0 {
+			return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", count)
+		}
+		orderID := strings.TrimSpace(ev.PurchaseOrderID)
+		if orderID == "" {
+			return "", errors.New("new_keys_available missing purchase_order_id")
+		}
+
+		rc := config.GetReplenishConfig()
+		client, err := newSupplierClient(rc)
+		if err != nil {
+			return "", err
+		}
+
+		// 与手动/后台补号串行，避免并发购买。
+		replenishMu.Lock()
+		res, err := h.purchaseAndImport(client, rc, count, orderID)
+		replenishMu.Unlock()
+		if err != nil {
+			return "", err
+		}
+		summary := fmt.Sprintf("webhook new_keys_available: %s", res.Summary)
+		logger.Infof("[Replenish] %s", summary)
+		return summary, nil
+
+	case "all_keys_dead":
+		summary := fmt.Sprintf("webhook all_keys_dead: %d 个 Key 已失效", ev.Dead)
+		logger.Warnf("[Replenish] %s", summary)
+		return summary, nil
+
+	default:
+		return "", fmt.Errorf("unsupported webhook event %q", ev.Event)
+	}
 }

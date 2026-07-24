@@ -606,5 +606,22 @@
   "replenish.runFailed": "Replenish failed",
   "replenish.lastRunTitle": "Last replenish",
   "replenish.lastRun": "Time:",
-  "replenish.neverRun": "No replenish has run yet"
+  "replenish.neverRun": "No replenish has run yet",
+  "replenish.webhookTitle": "Push-based Replenish (supplier webhook)",
+  "replenish.webhookIntro": "Register your public callback URL with the supplier; it pushes new_keys_available and this server buys and imports the batch automatically.",
+  "replenish.publicBaseUrl": "Public base URL",
+  "replenish.publicBaseUrlHint": "This server's internet-reachable base URL, e.g. https://my-proxy.example.com. Must be reachable by the supplier.",
+  "replenish.callbackUrl": "Callback URL",
+  "replenish.callbackUrlHint": "The address registered with the supplier. Save the public base URL then click Register.",
+  "replenish.copy": "Copy",
+  "replenish.callbackEmpty": "No callback URL yet; save the public base URL and register first",
+  "replenish.register": "Register callback",
+  "replenish.registerOk": "Callback registered with supplier",
+  "replenish.registerFailed": "Registration failed",
+  "replenish.resetSecret": "Reset secret",
+  "replenish.resetConfirm": "Reset the callback secret? The old callback URL stops working immediately and you must re-register.",
+  "replenish.resetOk": "Secret reset; please register again",
+  "replenish.lastWebhookTitle": "Last webhook",
+  "replenish.webhookLast": "Time:",
+  "replenish.webhookNever": "No supplier webhook received yet"
 }

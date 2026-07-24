@@ -606,5 +606,22 @@
   "replenish.runFailed": "补号失败",
   "replenish.lastRunTitle": "上次补号",
   "replenish.lastRun": "时间：",
-  "replenish.neverRun": "尚未执行过补号"
+  "replenish.neverRun": "尚未执行过补号",
+  "replenish.webhookTitle": "推送式补号（供应商回调）",
+  "replenish.webhookIntro": "把本服务的回调地址注册到供应商后，供应商在新一批 Key 就绪时会主动推送，系统据此自动提取并导入，无需等待轮询。需保证本服务公网可达。",
+  "replenish.publicBaseUrl": "公网基地址",
+  "replenish.publicBaseUrlHint": "本服务对外可访问的基地址（含协议），如 https://my-proxy.example.com，供应商将向此地址推送。",
+  "replenish.callbackUrl": "回调地址",
+  "replenish.callbackUrlHint": "注册后自动生成，内嵌随机密钥作为唯一鉴权。请勿泄露；如已泄露可重置密钥。",
+  "replenish.copy": "复制",
+  "replenish.register": "注册回调到供应商",
+  "replenish.registerOk": "回调地址已注册到供应商",
+  "replenish.registerFailed": "注册失败",
+  "replenish.resetSecret": "重置密钥",
+  "replenish.resetConfirm": "重置后旧回调地址立即失效，需重新注册。确定继续？",
+  "replenish.resetOk": "密钥已重置，请重新点击「注册回调到供应商」",
+  "replenish.callbackEmpty": "尚无回调地址，请先注册",
+  "replenish.lastWebhookTitle": "上次收到推送",
+  "replenish.webhookLast": "时间：",
+  "replenish.webhookNever": "尚未收到供应商推送"
 }

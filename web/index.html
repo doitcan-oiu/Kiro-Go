@@ -643,6 +643,33 @@
           <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
         </div>
 
+        <!-- Push-based replenish (supplier webhook) -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
+          <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
+          <div class="form-group">
+            <label data-i18n="replenish.publicBaseUrl"></label>
+            <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
+            <small data-i18n="replenish.publicBaseUrlHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.callbackUrl"></label>
+            <div class="input-row">
+              <input type="text" id="replenishCallbackUrl" readonly />
+              <button class="btn btn-outline" id="copyReplenishCallbackBtn" type="button" data-i18n="replenish.copy"></button>
+            </div>
+            <small data-i18n="replenish.callbackUrlHint"></small>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn btn-primary" id="registerReplenishWebhookBtn" data-i18n="replenish.register"></button>
+            <button class="btn btn-outline" id="resetReplenishSecretBtn" data-i18n="replenish.resetSecret"></button>
+          </div>
+          <div class="form-group mt-3">
+            <label class="font-semibold" data-i18n="replenish.lastWebhookTitle"></label>
+            <div id="replenishLastWebhook" class="text-sm muted-text"></div>
+          </div>
+        </div>
+
         <!-- Manual replenish -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
