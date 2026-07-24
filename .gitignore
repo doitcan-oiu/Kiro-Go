@@ -28,3 +28,4 @@ PR-*.md
 *~
 # local smoke-test output (dispatch runs, cached prompts, r-*.out)
 .smoke/
+对接文档.md
