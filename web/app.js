@@ -3099,8 +3099,10 @@
     try {
       const res = await api('/replenish/register-webhook', { method: 'POST' });
       const d = await res.json();
-      if (d.success) toastPrimary(t('replenish.registerOk'), { duration: 5000 });
-      else toastError(t('replenish.registerFailed') + ': ' + (d.error || ''));
+      if (d.success) {
+        if (d.callbackUrl) { const el = $('replenishCallbackUrl'); if (el) el.value = d.callbackUrl; }
+        toastPrimary(t('replenish.registerOk'), { duration: 5000 });
+      } else toastError(t('replenish.registerFailed') + ': ' + (d.error || ''));
     } finally {
       if (btn) btn.disabled = false;
       loadReplenish();
@@ -3110,8 +3112,10 @@
     if (!confirm(t('replenish.resetConfirm'))) return;
     const res = await api('/replenish/reset-secret', { method: 'POST' });
     const d = await res.json();
-    if (d.success) toastPrimary(t('replenish.resetOk'), { duration: 5000 });
-    else toastError(t('common.failed') + ': ' + (d.error || ''));
+    if (d.success) {
+      const el = $('replenishCallbackUrl'); if (el) el.value = d.callbackUrl || '';
+      toastPrimary(t('replenish.resetOk'), { duration: 5000 });
+    } else toastError(t('common.failed') + ': ' + (d.error || ''));
     loadReplenish();
   }
   async function copyReplenishCallback() {

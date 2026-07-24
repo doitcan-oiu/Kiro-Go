@@ -172,12 +172,12 @@ func newClientOrderID() string {
 
 // replenishResult 是一次补号运行的结构化结果，返回给前端并写入运行态。
 type replenishResult struct {
-	Purchased int     `json:"purchased"`          // 供应商实际出 Key 数
-	Imported  int     `json:"imported"`           // 成功导入账号池的数量
-	Skipped   int     `json:"skipped"`            // 因重复被跳过的数量
-	Remaining float64 `json:"remaining"`          // 供应商侧剩余余额
-	OrderID   string  `json:"orderId,omitempty"`  // 本次订单号
-	Summary   string  `json:"summary,omitempty"`  // 人类可读摘要
+	Purchased int     `json:"purchased"`         // 供应商实际出 Key 数
+	Imported  int     `json:"imported"`          // 成功导入账号池的数量
+	Skipped   int     `json:"skipped"`           // 因重复被跳过的数量
+	Remaining float64 `json:"remaining"`         // 供应商侧剩余余额
+	OrderID   string  `json:"orderId,omitempty"` // 本次订单号
+	Summary   string  `json:"summary,omitempty"` // 人类可读摘要
 }
 
 // replenishMu 串行化补号运行，避免手动触发与后台循环并发购买。
@@ -390,6 +390,15 @@ func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, 
 	case "all_keys_dead":
 		summary := fmt.Sprintf("webhook all_keys_dead: %d 个 Key 已失效", ev.Dead)
 		logger.Warnf("[Replenish] %s", summary)
+		return summary, nil
+
+	case "test", "webhook_test", "ping":
+		// 供应商「测试推送」按钮发来的连通性探测，不触发购买，仅确认收到。
+		summary := "webhook 连通性测试成功"
+		if strings.TrimSpace(ev.Message) != "" {
+			summary = "webhook 测试：" + strings.TrimSpace(ev.Message)
+		}
+		logger.Infof("[Replenish] %s", summary)
 		return summary, nil
 
 	default:
