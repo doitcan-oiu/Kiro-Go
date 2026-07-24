@@ -110,6 +110,9 @@
             <button type="button" class="tab" data-tab="api" data-i18n-title="tabs.api"
               data-i18n-aria-label="tabs.api"><i class="fa-solid fa-plug tab-icon"></i><span
                 data-i18n="tabs.api"></span></button>
+            <button type="button" class="tab" data-tab="replenish" data-i18n-title="tabs.replenish"
+              data-i18n-aria-label="tabs.replenish"><i class="fa-solid fa-cart-plus tab-icon"></i><span
+                data-i18n="tabs.replenish"></span></button>
             <button type="button" class="tab" data-tab="logs" data-i18n-title="tabs.logs"
               data-i18n-aria-label="tabs.logs"><i class="fa-solid fa-list tab-icon"></i><span
                 data-i18n="tabs.logs"></span></button>
@@ -583,6 +586,78 @@
           </div>
           <p class="api-hint"><i class="fa-solid fa-key"></i><span data-i18n="api.statsHint"></span></p>
         </section>
+      </div>
+
+      <!-- Replenish (补号) tab -->
+      <div id="tabReplenish" class="tab-content hidden">
+        <!-- Supplier connection -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="replenish.supplierTitle"></span></div>
+          <div class="form-group">
+            <label data-i18n="replenish.baseUrl"></label>
+            <input type="text" id="replenishBaseUrl" placeholder="https://vendor.example.com" autocomplete="off" />
+            <small data-i18n="replenish.baseUrlHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.apiKey"></label>
+            <input type="password" id="replenishApiKey" data-i18n-placeholder="replenish.apiKeyPlaceholder" autocomplete="new-password" />
+            <small data-i18n="replenish.apiKeyHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.region"></label>
+            <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
+            <small data-i18n="replenish.regionHint"></small>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
+            <button class="btn btn-outline" id="testReplenishBtn" data-i18n="replenish.test"></button>
+          </div>
+          <div id="replenishTestResult" class="text-sm mt-2"></div>
+        </div>
+
+        <!-- Auto-replenish policy -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="replenish.autoTitle"></span></div>
+          <div class="form-group">
+            <label class="flex items-center gap-2">
+              <span class="switch"><input type="checkbox" id="replenishEnabled" /><span class="slider"></span></span>
+              <span data-i18n="replenish.enabled"></span>
+            </label>
+            <small data-i18n="replenish.enabledHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.minPoolSize"></label>
+            <input type="number" id="replenishMinPoolSize" min="0" placeholder="3" />
+            <small data-i18n="replenish.minPoolSizeHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.batchCount"></label>
+            <input type="number" id="replenishBatchCount" min="1" placeholder="5" />
+            <small data-i18n="replenish.batchCountHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.interval"></label>
+            <input type="number" id="replenishInterval" min="60" placeholder="300" />
+            <small data-i18n="replenish.intervalHint"></small>
+          </div>
+          <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
+        </div>
+
+        <!-- Manual replenish -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
+          <div class="form-group">
+            <label data-i18n="replenish.manualCount"></label>
+            <input type="number" id="replenishManualCount" min="1" placeholder="5" />
+            <small data-i18n="replenish.manualCountHint"></small>
+          </div>
+          <button class="btn btn-primary" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
+          <div id="replenishRunResult" class="text-sm mt-2"></div>
+          <div class="form-group mt-3">
+            <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
+            <div id="replenishLastRun" class="text-sm muted-text"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Logs tab -->

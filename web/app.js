@@ -3015,6 +3015,108 @@
       if (r.error) console.warn('[ApiKeyBatch]', r.maskedKey, r.error);
     });
   }
+
+  // ---- 在线补号（Replenish）----
+  async function loadReplenish() {
+    try {
+      const res = await api('/replenish');
+      const d = await res.json();
+      const setVal = (id, v) => { const el = $(id); if (el) el.value = v; };
+      const setChk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+      setVal('replenishBaseUrl', d.baseUrl || '');
+      // apiKey 从不明文回显：有值时用掩码作占位，输入框留空表示保持不变。
+      const keyEl = $('replenishApiKey');
+      if (keyEl) {
+        keyEl.value = '';
+        keyEl.placeholder = d.hasApiKey ? (d.apiKeyMasked || '••••••') : t('replenish.apiKeyPlaceholder');
+      }
+      setVal('replenishRegion', d.region || '');
+      setChk('replenishEnabled', d.enabled);
+      setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
+      setVal('replenishBatchCount', d.batchCount != null ? d.batchCount : 0);
+      setVal('replenishInterval', d.intervalSeconds != null ? d.intervalSeconds : 0);
+      renderReplenishStatus(d);
+    } catch (e) {
+      console.warn('[Replenish] load failed', e);
+    }
+  }
+  function renderReplenishStatus(d) {
+    const box = $('replenishLastRun');
+    if (!box) return;
+    if (!d.lastRunAt) {
+      box.innerHTML = '<span class="text-muted">' + t('replenish.neverRun') + '</span>';
+      return;
+    }
+    const when = new Date(d.lastRunAt * 1000).toLocaleString();
+    let html = '<div class="replenish-status-line"><span class="muted-text">' + t('replenish.lastRun') + '</span> ' + when + '</div>';
+    if (d.lastError) {
+      html += '<div class="replenish-status-line text-danger"><i class="fa-solid fa-triangle-exclamation"></i> ' + escapeHtml(d.lastError) + '</div>';
+    } else if (d.lastResult) {
+      html += '<div class="replenish-status-line text-success"><i class="fa-solid fa-check"></i> ' + escapeHtml(d.lastResult) + '</div>';
+    }
+    box.innerHTML = html;
+  }
+  function collectReplenishPayload() {
+    const num = id => { const v = parseInt(($(id).value || '').trim(), 10); return isNaN(v) ? 0 : v; };
+    const payload = {
+      baseUrl: ($('replenishBaseUrl').value || '').trim(),
+      region: ($('replenishRegion').value || '').trim(),
+      enabled: $('replenishEnabled').checked,
+      minPoolSize: num('replenishMinPoolSize'),
+      batchCount: num('replenishBatchCount'),
+      intervalSeconds: num('replenishInterval')
+    };
+    // apiKey 仅在用户输入了新值时才提交（空 = 保持不变）。
+    const key = ($('replenishApiKey').value || '').trim();
+    if (key) payload.apiKey = key;
+    return payload;
+  }
+  async function saveReplenish() {
+    const res = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
+    const d = await res.json();
+    if (d.success) { toast(t('replenish.saved'), 'success'); loadReplenish(); }
+    else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
+  }
+  async function testReplenish() {
+    // 先保存当前表单，确保测试用的是面板上的连接信息。
+    const saveRes = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
+    const saveData = await saveRes.json();
+    if (!saveData.success) { toast(t('common.saveFailed') + ': ' + (saveData.error || ''), 'error'); return; }
+    const btn = $('testReplenishBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api('/replenish/test', { method: 'POST' });
+      const d = await res.json();
+      if (d.success) {
+        toastPrimary(t('replenish.testOk', d.name || '-', formatNumber(d.remaining), d.stock != null ? d.stock : '-'), { duration: 6000 });
+      } else {
+        toastError(t('replenish.testFailed') + ': ' + (d.error || ''));
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+      loadReplenish();
+    }
+  }
+  async function runReplenish() {
+    const raw = ($('replenishManualCount').value || '').trim();
+    const count = parseInt(raw, 10);
+    const body = (!isNaN(count) && count > 0) ? JSON.stringify({ count }) : '{}';
+    const btn = $('runReplenishBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api('/replenish/run', { method: 'POST', body });
+      const d = await res.json();
+      if (d.success) {
+        toastPrimary(t('replenish.runOk', d.purchased || 0, d.imported || 0, d.skipped || 0), { duration: 6000 });
+        loadStats(); loadAccounts();
+      } else {
+        toastError(t('replenish.runFailed') + ': ' + (d.error || ''));
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+      loadReplenish();
+    }
+  }
   async function importSsoToken() {
     const res = await api('/auth/sso-token', {
       method: 'POST', body: JSON.stringify({
@@ -3479,6 +3581,7 @@
     qsa('.tab-content').forEach(c => c.classList.add('hidden'));
     $('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.remove('hidden');
     if (tab === 'logs') loadLogs();
+    if (tab === 'replenish') loadReplenish();
   }
 
   // Event wiring
@@ -3621,6 +3724,18 @@
     const saveWebhookBtnEl = $('saveWebhookBtn');
     if (saveWebhookBtnEl) saveWebhookBtnEl.addEventListener('click', saveWebhookConfig);
     bindApiKeyEvents();
+    bindReplenishEvents();
+  }
+
+  function bindReplenishEvents() {
+    const save = $('saveReplenishBtn');
+    if (save) save.addEventListener('click', saveReplenish);
+    const savePolicy = $('saveReplenishPolicyBtn');
+    if (savePolicy) savePolicy.addEventListener('click', saveReplenish);
+    const test = $('testReplenishBtn');
+    if (test) test.addEventListener('click', testReplenish);
+    const run = $('runReplenishBtn');
+    if (run) run.addEventListener('click', runReplenish);
   }
 
   function bindPromptFilterEvents() {

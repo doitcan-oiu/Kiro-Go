@@ -419,6 +419,10 @@ type Config struct {
 	// key over-limit events. Payload carries id/name/reason only — never tokens.
 	WebhookURL string `json:"webhookUrl,omitempty"`
 
+	// Replenish holds the online account-replenishment (在线补号) configuration:
+	// supplier connection info plus the auto-replenish policy and last-run state.
+	Replenish ReplenishConfig `json:"replenish,omitempty"`
+
 	// Global statistics (persisted across restarts)
 	TotalRequests   int     `json:"totalRequests,omitempty"`   // Total API requests received
 	SuccessRequests int     `json:"successRequests,omitempty"` // Successful requests count

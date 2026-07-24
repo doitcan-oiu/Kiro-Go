@@ -274,6 +274,8 @@ func NewHandler() *Handler {
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
 	go purgeExpiredResponses(responsesDefaultTTL)
+	// 启动在线补号后台循环（仅在配置启用时实际运行）
+	h.startReplenishLoop()
 	return h
 }
 
@@ -2524,6 +2526,14 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiImportCredentials(w, r)
 	case path == "/auth/apikeys-batch" && r.Method == "POST":
 		h.apiImportApiKeys(w, r)
+	case path == "/replenish" && r.Method == "GET":
+		h.apiGetReplenish(w, r)
+	case path == "/replenish" && r.Method == "POST":
+		h.apiUpdateReplenish(w, r)
+	case path == "/replenish/test" && r.Method == "POST":
+		h.apiTestReplenish(w, r)
+	case path == "/replenish/run" && r.Method == "POST":
+		h.apiRunReplenish(w, r)
 	case path == "/status" && r.Method == "GET":
 		h.apiGetStatus(w, r)
 	case path == "/settings" && r.Method == "GET":
