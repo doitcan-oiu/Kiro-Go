@@ -3789,6 +3789,8 @@
     if (save) save.addEventListener('click', saveReplenish);
     const savePolicy = $('saveReplenishPolicyBtn');
     if (savePolicy) savePolicy.addEventListener('click', saveReplenish);
+    const saveWebhook = $('saveReplenishWebhookBtn');
+    if (saveWebhook) saveWebhook.addEventListener('click', saveReplenish);
     const test = $('testReplenishBtn');
     if (test) test.addEventListener('click', testReplenish);
     const run = $('runReplenishBtn');
