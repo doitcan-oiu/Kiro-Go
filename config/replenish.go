@@ -29,6 +29,11 @@ type ReplenishConfig struct {
 	BatchCount      int  `json:"batchCount,omitempty"`      // 每次补号购买的 Key 数量
 	IntervalSeconds int  `json:"intervalSeconds,omitempty"` // 自动检查间隔（秒），最小 60
 
+	// 推送式补号的单次提取上限。供应商 webhook 里的 new_keys 是「可提取上限」而非
+	// 必须全取，收到推送时按 min(new_keys, WebhookMaxCount) 提取。<=0 表示不限制，
+	// 取供应商推送的全部。
+	WebhookMaxCount int `json:"webhookMaxCount,omitempty"`
+
 	// 推送式补号（供应商 webhook）
 	// PublicBaseURL 是本服务的公网基地址（如 https://my-proxy.example.com），
 	// 用于拼接注册给供应商的回调地址。WebhookSecret 是回调路径内嵌的随机密钥，
@@ -71,6 +76,9 @@ func UpdateReplenishSettings(rc ReplenishConfig) error {
 	if rc.BatchCount < 0 {
 		rc.BatchCount = 0
 	}
+	if rc.WebhookMaxCount < 0 {
+		rc.WebhookMaxCount = 0
+	}
 	// 保留运行态字段，仅覆盖用户可配置项。
 	cfg.Replenish.BaseURL = rc.BaseURL
 	cfg.Replenish.ApiKey = rc.ApiKey
@@ -79,6 +87,7 @@ func UpdateReplenishSettings(rc ReplenishConfig) error {
 	cfg.Replenish.MinPoolSize = rc.MinPoolSize
 	cfg.Replenish.BatchCount = rc.BatchCount
 	cfg.Replenish.IntervalSeconds = rc.IntervalSeconds
+	cfg.Replenish.WebhookMaxCount = rc.WebhookMaxCount
 	cfg.Replenish.PublicBaseURL = strings.TrimRight(strings.TrimSpace(rc.PublicBaseURL), "/")
 	return Save()
 }

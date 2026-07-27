@@ -648,6 +648,11 @@
           <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
           <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
           <div class="form-group">
+            <label data-i18n="replenish.webhookMaxCount"></label>
+            <input type="number" id="replenishWebhookMaxCount" min="0" placeholder="0" />
+            <small data-i18n="replenish.webhookMaxCountHint"></small>
+          </div>
+          <div class="form-group">
             <label data-i18n="replenish.publicBaseUrl"></label>
             <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
             <small data-i18n="replenish.publicBaseUrlHint"></small>

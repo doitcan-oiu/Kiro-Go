@@ -609,6 +609,8 @@
   "replenish.neverRun": "尚未执行过补号",
   "replenish.webhookTitle": "推送式补号（供应商回调）",
   "replenish.webhookIntro": "把本服务的回调地址注册到供应商后，供应商在新一批 Key 就绪时会主动推送，系统据此自动提取并导入，无需等待轮询。需保证本服务公网可达。",
+  "replenish.webhookMaxCount": "单次推送提取上限",
+  "replenish.webhookMaxCountHint": "每次收到推送时最多提取的 Key 数量。供应商推送的 new_keys 是「可提取上限」而非必须全取，本服务按 min(new_keys, 该值) 提取。填 0 表示不限制，取供应商推送的全部。",
   "replenish.publicBaseUrl": "公网基地址",
   "replenish.publicBaseUrlHint": "本服务对外可访问的基地址（含协议），如 https://my-proxy.example.com，供应商将向此地址推送。",
   "replenish.callbackUrl": "回调地址",

@@ -609,6 +609,8 @@
   "replenish.neverRun": "No replenish has run yet",
   "replenish.webhookTitle": "Push-based Replenish (supplier webhook)",
   "replenish.webhookIntro": "Register your public callback URL with the supplier; it pushes new_keys_available and this server buys and imports the batch automatically.",
+  "replenish.webhookMaxCount": "Max keys per push",
+  "replenish.webhookMaxCountHint": "Upper bound on keys pulled per push. The supplier's new_keys is a maximum, not a mandatory amount; this server pulls min(new_keys, this value). 0 means no limit (pull all the supplier offers).",
   "replenish.publicBaseUrl": "Public base URL",
   "replenish.publicBaseUrlHint": "This server's internet-reachable base URL, e.g. https://my-proxy.example.com. Must be reachable by the supplier.",
   "replenish.callbackUrl": "Callback URL",

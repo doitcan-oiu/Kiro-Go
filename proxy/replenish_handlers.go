@@ -45,6 +45,7 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 		"minPoolSize":     rc.MinPoolSize,
 		"batchCount":      rc.BatchCount,
 		"intervalSeconds": rc.IntervalSeconds,
+		"webhookMaxCount": rc.WebhookMaxCount,
 		"publicBaseUrl":   rc.PublicBaseURL,
 		"webhookUrl":      webhookURL,
 		"hasSecret":       rc.WebhookSecret != "",
@@ -67,6 +68,7 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 		MinPoolSize     *int    `json:"minPoolSize,omitempty"`
 		BatchCount      *int    `json:"batchCount,omitempty"`
 		IntervalSeconds *int    `json:"intervalSeconds,omitempty"`
+		WebhookMaxCount *int    `json:"webhookMaxCount,omitempty"`
 		PublicBaseURL   *string `json:"publicBaseUrl,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -97,6 +99,9 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IntervalSeconds != nil {
 		rc.IntervalSeconds = *req.IntervalSeconds
+	}
+	if req.WebhookMaxCount != nil {
+		rc.WebhookMaxCount = *req.WebhookMaxCount
 	}
 	if req.PublicBaseURL != nil {
 		rc.PublicBaseURL = *req.PublicBaseURL

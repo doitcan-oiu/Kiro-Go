@@ -3035,6 +3035,7 @@
       setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
       setVal('replenishBatchCount', d.batchCount != null ? d.batchCount : 0);
       setVal('replenishInterval', d.intervalSeconds != null ? d.intervalSeconds : 0);
+      setVal('replenishWebhookMaxCount', d.webhookMaxCount != null ? d.webhookMaxCount : 0);
       setVal('replenishPublicBaseUrl', d.publicBaseUrl || '');
       setVal('replenishCallbackUrl', d.callbackUrl || '');
       renderReplenishStatus(d);
@@ -3068,6 +3069,7 @@
       minPoolSize: num('replenishMinPoolSize'),
       batchCount: num('replenishBatchCount'),
       intervalSeconds: num('replenishInterval'),
+      webhookMaxCount: num('replenishWebhookMaxCount'),
       publicBaseUrl: ($('replenishPublicBaseUrl').value || '').trim()
     };
     // apiKey 仅在用户输入了新值时才提交（空 = 保持不变）。

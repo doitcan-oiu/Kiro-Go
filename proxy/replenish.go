@@ -361,9 +361,9 @@ type supplierWebhookEvent struct {
 func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, error) {
 	switch ev.Event {
 	case "new_keys_available":
-		count := ev.NewKeys
-		if count <= 0 {
-			return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", count)
+		available := ev.NewKeys
+		if available <= 0 {
+			return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", available)
 		}
 		orderID := strings.TrimSpace(ev.PurchaseOrderID)
 		if orderID == "" {
@@ -374,6 +374,15 @@ func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, 
 		client, err := newSupplierClient(rc)
 		if err != nil {
 			return "", err
+		}
+
+		// new_keys 是「可提取上限」而非必须全取。若配置了单次上限，则夹取到该值，
+		// 让用户无需改动供应商侧即可控制每轮实际提取数量。<=0 表示不限制。
+		count := available
+		if rc.WebhookMaxCount > 0 && count > rc.WebhookMaxCount {
+			logger.Infof("[Replenish] webhook new_keys=%d clamped to webhookMaxCount=%d",
+				available, rc.WebhookMaxCount)
+			count = rc.WebhookMaxCount
 		}
 
 		// 与手动/后台补号串行，避免并发购买。
