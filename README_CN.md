@@ -119,7 +119,7 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 联系方式
 
-Telegram：[@tutua16888](https://t.me/tutua16888)
+Telegram：[@hello1112005](https://t.me/hello1112005)
 
 ## 友情链接
 
