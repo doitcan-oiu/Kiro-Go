@@ -3023,23 +3023,34 @@
       const d = await res.json();
       const setVal = (id, v) => { const el = $(id); if (el) el.value = v; };
       const setChk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+      setVal('replenishProvider', d.provider || 'default');
       setVal('replenishBaseUrl', d.baseUrl || '');
-      // apiKey 从不明文回显：有值时用掩码作占位，输入框留空表示保持不变。
+      // 密钥从不明文回显：有值时用掩码作占位，输入框留空表示保持不变。
       const keyEl = $('replenishApiKey');
       if (keyEl) {
         keyEl.value = '';
         keyEl.placeholder = d.hasApiKey ? (d.apiKeyMasked || '••••••') : t('replenish.apiKeyPlaceholder');
+      }
+      setVal('replenishKiroappBaseUrl', d.kiroappBaseUrl || '');
+      const kKeyEl = $('replenishKiroappApiKey');
+      if (kKeyEl) {
+        kKeyEl.value = '';
+        kKeyEl.placeholder = d.hasKiroappApiKey ? (d.kiroappApiKeyMasked || '••••••') : t('replenish.kiroappApiKeyPlaceholder');
       }
       setVal('replenishRegion', d.region || '');
       setChk('replenishEnabled', d.enabled);
       setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
       setVal('replenishBatchCount', d.batchCount != null ? d.batchCount : 0);
       setVal('replenishInterval', d.intervalSeconds != null ? d.intervalSeconds : 0);
+      setChk('replenishAllDead', d.allDeadReplenish);
+      setVal('replenishAllDeadCount', d.allDeadCount != null ? d.allDeadCount : 0);
       setVal('replenishWebhookMaxCount', d.webhookMaxCount != null ? d.webhookMaxCount : 0);
       setVal('replenishPublicBaseUrl', d.publicBaseUrl || '');
-      setVal('replenishCallbackUrl', d.callbackUrl || '');
+      setVal('replenishCallbackUrl', d.callbackUrl || d.webhookUrl || '');
+      updateReplenishProviderUI();
       renderReplenishStatus(d);
       renderReplenishWebhookStatus(d);
+      renderReplenishCredentials(d);
     } catch (e) {
       console.warn('[Replenish] load failed', e);
     }
@@ -3060,21 +3071,53 @@
     }
     box.innerHTML = html;
   }
+  // 按当前选中的供应商切换连接字段，并隐藏不适用的推送式补号卡片
+  // （kiroapp.cc 没有 webhook 接口，只能靠轮询）。
+  function updateReplenishProviderUI() {
+    const provider = ($('replenishProvider') || {}).value || 'default';
+    const isKiroapp = provider === 'kiroapp';
+    const toggle = (id, show) => { const el = $(id); if (el) el.classList.toggle('hidden', !show); };
+    toggle('replenishVendorFields', !isKiroapp);
+    toggle('replenishKiroappFields', isKiroapp);
+    // 只有 vendor 支持推送式补号。
+    toggle('replenishWebhookCard', !isKiroapp);
+  }
+  // 展示凭证健康度，让用户知道「全部凭证禁用」触发条件当前是否成立。
+  function renderReplenishCredentials(d) {
+    const box = $('replenishCredentials');
+    if (!box) return;
+    if (d.credentialsTotal == null) { box.innerHTML = ''; return; }
+    const summary = t('replenish.credentialsSummary', d.credentialsEnabled || 0, d.credentialsTotal || 0);
+    let html = '<div class="replenish-status-line">' + escapeHtml(summary) + '</div>';
+    if (d.credentialsAllDisabled) {
+      html += '<div class="replenish-status-line text-danger"><i class="fa-solid fa-triangle-exclamation"></i> '
+        + t('replenish.credentialsAllDisabled') + '</div>';
+    }
+    box.innerHTML = html;
+  }
   function collectReplenishPayload() {
-    const num = id => { const v = parseInt(($(id).value || '').trim(), 10); return isNaN(v) ? 0 : v; };
+    const num = id => { const el = $(id); if (!el) return 0; const v = parseInt((el.value || '').trim(), 10); return isNaN(v) ? 0 : v; };
+    const str = id => { const el = $(id); return el ? (el.value || '').trim() : ''; };
+    const chk = id => { const el = $(id); return el ? !!el.checked : false; };
     const payload = {
-      baseUrl: ($('replenishBaseUrl').value || '').trim(),
-      region: ($('replenishRegion').value || '').trim(),
-      enabled: $('replenishEnabled').checked,
+      provider: ($('replenishProvider') || {}).value || 'default',
+      baseUrl: str('replenishBaseUrl'),
+      kiroappBaseUrl: str('replenishKiroappBaseUrl'),
+      region: str('replenishRegion'),
+      enabled: chk('replenishEnabled'),
       minPoolSize: num('replenishMinPoolSize'),
       batchCount: num('replenishBatchCount'),
       intervalSeconds: num('replenishInterval'),
+      allDeadReplenish: chk('replenishAllDead'),
+      allDeadCount: num('replenishAllDeadCount'),
       webhookMaxCount: num('replenishWebhookMaxCount'),
-      publicBaseUrl: ($('replenishPublicBaseUrl').value || '').trim()
+      publicBaseUrl: str('replenishPublicBaseUrl')
     };
-    // apiKey 仅在用户输入了新值时才提交（空 = 保持不变）。
-    const key = ($('replenishApiKey').value || '').trim();
+    // 密钥仅在用户输入了新值时才提交（空 = 保持不变）。
+    const key = str('replenishApiKey');
     if (key) payload.apiKey = key;
+    const kKey = str('replenishKiroappApiKey');
+    if (kKey) payload.kiroappApiKey = kKey;
     return payload;
   }
   function renderReplenishWebhookStatus(d) {
@@ -3145,7 +3188,13 @@
       const res = await api('/replenish/test', { method: 'POST' });
       const d = await res.json();
       if (d.success) {
-        toastPrimary(t('replenish.testOk', d.name || '-', formatNumber(d.remaining), d.stock != null ? d.stock : '-'), { duration: 6000 });
+        // 供应商字段覆盖度不同：vendor 有账户名，kiroapp 只有余额/单价。
+        const stock = d.stock != null ? d.stock : '-';
+        const msg = d.name
+          ? t('replenish.testOk', d.name, formatNumber(d.remaining), stock)
+          : t('replenish.testOkKiroapp', formatNumber(d.remaining), stock,
+              d.keyPrice != null ? formatNumber(d.keyPrice) : '-');
+        toastPrimary(msg, { duration: 6000 });
       } else {
         toastError(t('replenish.testFailed') + ': ' + (d.error || ''));
       }
@@ -3801,6 +3850,9 @@
     if (reset) reset.addEventListener('click', resetReplenishSecret);
     const copy = $('copyReplenishCallbackBtn');
     if (copy) copy.addEventListener('click', copyReplenishCallback);
+    // 切换供应商时立即切换连接字段，无需先保存。
+    const provider = $('replenishProvider');
+    if (provider) provider.addEventListener('change', updateReplenishProviderUI);
   }
 
   function bindPromptFilterEvents() {

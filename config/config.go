@@ -681,6 +681,55 @@ func GetEnabledAccounts() []Account {
 	return accounts
 }
 
+// CredentialHealth is a snapshot of how many stored credentials are usable.
+// Used by the replenish loop's "all credentials disabled" trigger.
+//
+// PendingAutoRestore counts accounts that are only temporarily quarantined
+// (SUSPENDED by the auto-429 sweep) and will come back on their own. They are
+// disabled right now but are NOT permanently dead, so a pool that consists
+// solely of them must not trigger a purchase.
+type CredentialHealth struct {
+	Total              int
+	Enabled            int
+	PendingAutoRestore int
+}
+
+// AllDisabled reports whether every stored credential is disabled with none
+// waiting to auto-restore. False when there are no credentials at all: an empty
+// pool is a fresh install, not a pool that died, and the low-water-mark policy
+// already covers filling it.
+func (h CredentialHealth) AllDisabled() bool {
+	return h.Total > 0 && h.Enabled == 0 && h.PendingAutoRestore == 0
+}
+
+// GetCredentialHealth counts total/enabled credentials plus those pending
+// auto-restore. Runs the auto-restore sweep first so accounts whose quarantine
+// has already elapsed are counted as enabled rather than dead.
+func GetCredentialHealth() CredentialHealth {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return CredentialHealth{}
+	}
+	applyAutoRestoreLocked()
+	now := time.Now()
+	h := CredentialHealth{Total: len(cfg.Accounts)}
+	for i := range cfg.Accounts {
+		a := cfg.Accounts[i]
+		if a.Enabled {
+			h.Enabled++
+			continue
+		}
+		// Disabled but on the auto-restore path: quarantined by the 429 sweep and
+		// not yet past its window (elapsed ones were just restored above).
+		if a.BanStatus == "SUSPENDED" && a.BanReason == autoQuarantineSuspicious429Reason &&
+			a.BanTime > 0 && now.Unix()-a.BanTime < int64(autoQuarantineDuration/time.Second) {
+			h.PendingAutoRestore++
+		}
+	}
+	return h
+}
+
 func AddAccount(account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()

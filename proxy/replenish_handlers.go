@@ -36,24 +36,43 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 	if rc.PublicBaseURL != "" && rc.WebhookSecret != "" {
 		webhookURL = replenishWebhookPath(rc.PublicBaseURL, rc.WebhookSecret)
 	}
+	// 凭证健康度用于面板说明「全部凭证禁用」触发条件当前是否成立。
+	health := config.GetCredentialHealth()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"baseUrl":         rc.BaseURL,
-		"apiKeyMasked":    config.MaskApiKey(rc.ApiKey),
-		"hasApiKey":       rc.ApiKey != "",
-		"region":          rc.Region,
-		"enabled":         rc.Enabled,
-		"minPoolSize":     rc.MinPoolSize,
-		"batchCount":      rc.BatchCount,
-		"intervalSeconds": rc.IntervalSeconds,
+		"provider": rc.EffectiveProvider(),
+		// vendor 供应商连接信息
+		"baseUrl":      rc.BaseURL,
+		"apiKeyMasked": config.MaskApiKey(rc.ApiKey),
+		"hasApiKey":    rc.ApiKey != "",
+		// kiroapp.cc 供应商连接信息
+		"kiroappBaseUrl":      rc.KiroappBaseURL,
+		"kiroappBaseUrlHint":  config.DefaultKiroappBaseURL,
+		"kiroappApiKeyMasked": config.MaskApiKey(rc.KiroappApiKey),
+		"hasKiroappApiKey":    rc.KiroappApiKey != "",
+		// 策略
+		"region":           rc.Region,
+		"enabled":          rc.Enabled,
+		"minPoolSize":      rc.MinPoolSize,
+		"batchCount":       rc.BatchCount,
+		"intervalSeconds":  rc.IntervalSeconds,
+		"allDeadReplenish": rc.AllDeadReplenish,
+		"allDeadCount":     rc.AllDeadCount,
+		// 推送式补号（仅 vendor 支持）
+		"supportsWebhook": rc.SupportsWebhook(),
 		"webhookMaxCount": rc.WebhookMaxCount,
 		"publicBaseUrl":   rc.PublicBaseURL,
 		"webhookUrl":      webhookURL,
 		"hasSecret":       rc.WebhookSecret != "",
-		"lastRunAt":       rc.LastRunAt,
-		"lastError":       rc.LastError,
-		"lastResult":      rc.LastResult,
-		"lastWebhookAt":   rc.LastWebhookAt,
-		"lastWebhookMsg":  rc.LastWebhookMsg,
+		// 运行态
+		"lastRunAt":      rc.LastRunAt,
+		"lastError":      rc.LastError,
+		"lastResult":     rc.LastResult,
+		"lastWebhookAt":  rc.LastWebhookAt,
+		"lastWebhookMsg": rc.LastWebhookMsg,
+		// 凭证健康度
+		"credentialsTotal":       health.Total,
+		"credentialsEnabled":     health.Enabled,
+		"credentialsAllDisabled": health.AllDisabled(),
 	})
 }
 
@@ -61,15 +80,20 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 // 传入非空值才覆盖。
 func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL         *string `json:"baseUrl,omitempty"`
-		ApiKey          *string `json:"apiKey,omitempty"`
-		Region          *string `json:"region,omitempty"`
-		Enabled         *bool   `json:"enabled,omitempty"`
-		MinPoolSize     *int    `json:"minPoolSize,omitempty"`
-		BatchCount      *int    `json:"batchCount,omitempty"`
-		IntervalSeconds *int    `json:"intervalSeconds,omitempty"`
-		WebhookMaxCount *int    `json:"webhookMaxCount,omitempty"`
-		PublicBaseURL   *string `json:"publicBaseUrl,omitempty"`
+		Provider         *string `json:"provider,omitempty"`
+		BaseURL          *string `json:"baseUrl,omitempty"`
+		ApiKey           *string `json:"apiKey,omitempty"`
+		KiroappBaseURL   *string `json:"kiroappBaseUrl,omitempty"`
+		KiroappApiKey    *string `json:"kiroappApiKey,omitempty"`
+		Region           *string `json:"region,omitempty"`
+		Enabled          *bool   `json:"enabled,omitempty"`
+		MinPoolSize      *int    `json:"minPoolSize,omitempty"`
+		BatchCount       *int    `json:"batchCount,omitempty"`
+		IntervalSeconds  *int    `json:"intervalSeconds,omitempty"`
+		AllDeadReplenish *bool   `json:"allDeadReplenish,omitempty"`
+		AllDeadCount     *int    `json:"allDeadCount,omitempty"`
+		WebhookMaxCount  *int    `json:"webhookMaxCount,omitempty"`
+		PublicBaseURL    *string `json:"publicBaseUrl,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -79,11 +103,21 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 
 	// 以当前配置为基线，仅覆盖请求中出现的字段。
 	rc := config.GetReplenishConfig()
+	if req.Provider != nil {
+		rc.Provider = *req.Provider
+	}
 	if req.BaseURL != nil {
 		rc.BaseURL = *req.BaseURL
 	}
 	if req.ApiKey != nil && *req.ApiKey != "" {
 		rc.ApiKey = *req.ApiKey
+	}
+	if req.KiroappBaseURL != nil {
+		rc.KiroappBaseURL = *req.KiroappBaseURL
+	}
+	// 与 apiKey 同理：空字符串表示保持原密钥不变（面板不回显明文）。
+	if req.KiroappApiKey != nil && *req.KiroappApiKey != "" {
+		rc.KiroappApiKey = *req.KiroappApiKey
 	}
 	if req.Region != nil {
 		rc.Region = *req.Region
@@ -99,6 +133,12 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IntervalSeconds != nil {
 		rc.IntervalSeconds = *req.IntervalSeconds
+	}
+	if req.AllDeadReplenish != nil {
+		rc.AllDeadReplenish = *req.AllDeadReplenish
+	}
+	if req.AllDeadCount != nil {
+		rc.AllDeadCount = *req.AllDeadCount
 	}
 	if req.WebhookMaxCount != nil {
 		rc.WebhookMaxCount = *req.WebhookMaxCount
@@ -118,32 +158,42 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-// apiTestReplenish 测试供应商连通性：查询余额与本轮可提取上限。
+// apiTestReplenish 测试当前所选供应商的连通性：查询账户信息与可提取上限。
+// 各供应商字段覆盖度不同（kiroapp 只有余额与单价），缺失的字段直接不返回，
+// 由前端按存在性展示。
 func (h *Handler) apiTestReplenish(w http.ResponseWriter, r *http.Request) {
-	client, err := newSupplierClient(config.GetReplenishConfig())
+	rc := config.GetReplenishConfig()
+	client, err := newReplenishSupplier(rc)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	profile, err := client.Profile()
+	acc, err := client.Account()
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	// 库存查询失败不致命，作为附加信息返回。
-	stock, stockErr := client.Stock()
 	resp := map[string]interface{}{
 		"success":   true,
-		"name":      profile.Name,
-		"quota":     profile.Quota,
-		"remaining": profile.Remaining,
-		"usedQuota": profile.UsedQuota,
+		"provider":  client.ProviderName(),
+		"remaining": acc.Remaining,
 	}
-	if stockErr == nil {
+	if acc.Name != "" {
+		resp["name"] = acc.Name
+	}
+	if acc.HasQuota {
+		resp["quota"] = acc.Quota
+		resp["usedQuota"] = acc.UsedQuota
+	}
+	if acc.HasPrice {
+		resp["keyPrice"] = acc.KeyPrice
+	}
+	// 库存查询失败不致命，作为附加信息返回。
+	if stock, stockErr := client.Stock(); stockErr == nil {
 		resp["stock"] = stock
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -175,6 +225,7 @@ func (h *Handler) apiRunReplenish(w http.ResponseWriter, r *http.Request) {
 		"skipped":   res.Skipped,
 		"remaining": res.Remaining,
 		"orderId":   res.OrderID,
+		"provider":  res.Provider,
 		"summary":   res.Summary,
 	})
 }
@@ -184,6 +235,14 @@ func (h *Handler) apiRunReplenish(w http.ResponseWriter, r *http.Request) {
 // 需先保存公网基地址（PublicBaseURL）。
 func (h *Handler) apiRegisterReplenishWebhook(w http.ResponseWriter, r *http.Request) {
 	rc := config.GetReplenishConfig()
+	// 只有 vendor 供应商有 webhook 接口；kiroapp 只能靠轮询。
+	if !rc.SupportsWebhook() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "current provider does not support webhook push; use polling instead",
+		})
+		return
+	}
 	if strings.TrimSpace(rc.PublicBaseURL) == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "publicBaseUrl is not configured"})

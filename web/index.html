@@ -594,15 +594,42 @@
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.supplierTitle"></span></div>
           <div class="form-group">
-            <label data-i18n="replenish.baseUrl"></label>
-            <input type="text" id="replenishBaseUrl" placeholder="https://vendor.example.com" autocomplete="off" />
-            <small data-i18n="replenish.baseUrlHint"></small>
+            <label for="replenishProvider" data-i18n="replenish.provider"></label>
+            <select id="replenishProvider">
+              <option value="default" data-i18n="replenish.providerVendor"></option>
+              <option value="kiroapp" data-i18n="replenish.providerKiroapp"></option>
+            </select>
+            <small data-i18n="replenish.providerHint"></small>
           </div>
-          <div class="form-group">
-            <label data-i18n="replenish.apiKey"></label>
-            <input type="password" id="replenishApiKey" data-i18n-placeholder="replenish.apiKeyPlaceholder" autocomplete="new-password" />
-            <small data-i18n="replenish.apiKeyHint"></small>
+
+          <!-- Provider = default (vendor) connection fields -->
+          <div id="replenishVendorFields">
+            <div class="form-group">
+              <label data-i18n="replenish.baseUrl"></label>
+              <input type="text" id="replenishBaseUrl" placeholder="https://vendor.example.com" autocomplete="off" />
+              <small data-i18n="replenish.baseUrlHint"></small>
+            </div>
+            <div class="form-group">
+              <label data-i18n="replenish.apiKey"></label>
+              <input type="password" id="replenishApiKey" data-i18n-placeholder="replenish.apiKeyPlaceholder" autocomplete="new-password" />
+              <small data-i18n="replenish.apiKeyHint"></small>
+            </div>
           </div>
+
+          <!-- Provider = kiroapp.cc connection fields -->
+          <div id="replenishKiroappFields" class="hidden">
+            <div class="form-group">
+              <label data-i18n="replenish.kiroappBaseUrl"></label>
+              <input type="text" id="replenishKiroappBaseUrl" placeholder="https://kiroapp.cc" autocomplete="off" />
+              <small data-i18n="replenish.kiroappBaseUrlHint"></small>
+            </div>
+            <div class="form-group">
+              <label data-i18n="replenish.kiroappApiKey"></label>
+              <input type="password" id="replenishKiroappApiKey" data-i18n-placeholder="replenish.kiroappApiKeyPlaceholder" autocomplete="new-password" />
+              <small data-i18n="replenish.kiroappApiKeyHint"></small>
+            </div>
+          </div>
+
           <div class="form-group">
             <label data-i18n="replenish.region"></label>
             <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
@@ -640,11 +667,30 @@
             <input type="number" id="replenishInterval" min="60" placeholder="300" />
             <small data-i18n="replenish.intervalHint"></small>
           </div>
+
+          <div class="form-group">
+            <label class="flex items-center gap-2">
+              <span class="switch"><input type="checkbox" id="replenishAllDead" /><span class="slider"></span></span>
+              <span data-i18n="replenish.allDead"></span>
+            </label>
+            <small data-i18n="replenish.allDeadHint"></small>
+          </div>
+          <div class="form-group">
+            <label data-i18n="replenish.allDeadCount"></label>
+            <input type="number" id="replenishAllDeadCount" min="0" placeholder="0" />
+            <small data-i18n="replenish.allDeadCountHint"></small>
+          </div>
+          <div class="form-group">
+            <label class="font-semibold" data-i18n="replenish.credentialsTitle"></label>
+            <div id="replenishCredentials" class="text-sm muted-text"></div>
+          </div>
+
           <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
         </div>
 
-        <!-- Push-based replenish (supplier webhook) -->
-        <div class="card">
+        <!-- Push-based replenish (supplier webhook). Hidden for providers with no
+             webhook support (kiroapp.cc) — see updateReplenishProviderUI. -->
+        <div class="card" id="replenishWebhookCard">
           <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
           <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
           <div class="form-group">
