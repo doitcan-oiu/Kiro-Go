@@ -1,29 +1,30 @@
 package proxy
 
-// 在线补号（在线购买 Kiro API Key 并导入账号池）的框架层。
+// 在线补号（在线购买 Kiro API Key 并导入账号池）。
 //
-// 目前没有任何供应商实现：原先对接的三家（default / kiroapp.cc / kiroapp.io）已整体
-// 移除，newReplenishSupplier 因此一律返回 errNoReplenishSupplier。手动补号、后台
-// 轮询与 webhook 推送都会以「无可用供应商」失败，并把原因记录到运行态供面板展示。
+// 两家供应商并行工作，不是二选一：
+//   - kirossClient（replenish_kiross.go，config.ReplenishProviderKiross）：
+//     X-API-Key 头，/api/my/*，支持 client_order_id 幂等与 PUT /api/my/webhook 注册回调。
+//   - kiroappioClient（replenish_kiroappio.go，config.ReplenishProviderKiroappio）：
+//     Authorization: Bearer km_，/api/me/*，支持 client_order_id 幂等与 webhook 推送，
+//     但回调地址只能在其站点后台手填。
 //
-// 保留下来的是与具体供应商无关的框架：
-//  1. replenishSupplier 抽象与统一的入参/结果 DTO（supplierClaimRequest /
-//     supplierClaim / supplierAccount）。新增供应商只需实现该接口，并在
-//     newReplenishSupplier 里挂上，其余编排无需改动。
-//  2. Handler 上的补号编排 —— runReplenishOnce 提取一批 Key 并复用既有的
-//     ImportApiKeys 导入到账号池；backgroundReplenish 周期性检查低水位与
-//     「全部凭证禁用」两种触发条件；handleReplenishWebhookEvent 处理入站推送。
+// 为什么并行：单家的 Key 存活时间不可控，只靠一家可能出现「全死了才发现」的窗口。
+// 两家同时补，任一家的 Key 被封时另一家仍在供货。因此：
+//   - 轮询触发时遍历所有启用的供应商，各买一批；单家失败不影响另一家（见 replenishAll）。
+//   - 推送触发时只买推送方（见 handleProviderWebhookEvent），数量取该家自己的
+//     WebhookCount 配置，与另一家无关。
 //
-// 幂等约定：框架统一为每次提取生成 32 位十六进制的 ClientOrderID（见
-// newClientOrderID），供应商实现无需自己造。支持幂等的上游应原样作为
-// client_order_id 上报，失败重试复用同一值即可避免重复扣费；不支持的上游忽略它，
-// 但其失败不应自动重试。
+// 幂等：两家的 purchase 都必填 client_order_id（32 位十六进制）。推送场景优先复用
+// 事件里的订单号（kiroappio 的 client_order_id 由「批次 + 收件人」确定性派生，
+// kiross 的 purchase_order_id 在 Hook 重试时恒定），因此推送重试不会二次扣费。
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,17 +48,16 @@ type supplierAccount struct {
 
 // supplierClaimRequest 是一次提取请求的统一入参。
 //
-// ClientOrderID 是幂等键，由框架生成保证非空。支持幂等的供应商应把它作为
-// client_order_id 上报；不支持的实现忽略即可。
-// BatchOrderID 是可选的上游批次 id：webhook 推送里带批次概念的供应商可用它只提取
-// 该批次产出的 Key，无此概念的实现忽略。
+// ClientOrderID 是幂等键，由框架保证非空。两家都作为 client_order_id 上报。
+// BatchOrderID 是可选的上游批次 id：kiroappio 用它只提取该批次产出的 Key；
+// kiross 无此概念，忽略。
 type supplierClaimRequest struct {
 	Count         int
 	ClientOrderID string
 	BatchOrderID  string
 }
 
-// supplierClaim 是一次提取的统一结果。OrderID 仅支持幂等的供应商有（订单号）。
+// supplierClaim 是一次提取的统一结果。
 //
 // Purchased 是供应商自报的出 Key 数量（计费依据），可能与 len(Keys) 不同——例如
 // 幂等重试命中已有订单时。<=0 表示供应商未提供该字段，调用方应回退到 len(Keys)。
@@ -91,19 +91,71 @@ type replenishSupplier interface {
 	ProviderName() string
 }
 
-// errNoReplenishSupplier 表示当前没有任何可用的补号供应商。
-//
-// 三家原有供应商已整体移除，框架保留但无实现。所有补号入口（手动、轮询、webhook）
-// 都会拿到这个错误，因此面板上的失败原因是明确的「没有供应商」，而不是配置校验
-// 报错那类容易被误读为「填错了」的提示。
-var errNoReplenishSupplier = errors.New("no replenish supplier is available: all suppliers have been removed")
+// newReplenishSupplier 按供应商标识构造对应的客户端。
+// sc 是该家自己的配置（凭证缺失时构造失败），provider 未知时返回错误。
+func newReplenishSupplier(provider string, sc config.SupplierConfig) (replenishSupplier, error) {
+	switch config.NormalizeReplenishProvider(provider) {
+	case config.ReplenishProviderKiross:
+		return newKirossClient(sc)
+	case config.ReplenishProviderKiroappio:
+		return newKiroappioClient(sc)
+	default:
+		return nil, fmt.Errorf("unknown replenish provider %q", provider)
+	}
+}
 
-// newReplenishSupplier 构造当前配置对应的供应商客户端。
+// webhookRegistrar 是「能通过 API 注册回调地址」这一可选能力。
 //
-// 目前恒定返回 errNoReplenishSupplier。新增供应商时在此按
-// rc.EffectiveProvider() 分支返回对应实现即可，调用方无需改动。
-func newReplenishSupplier(rc config.ReplenishConfig) (replenishSupplier, error) {
-	return nil, errNoReplenishSupplier
+// 只有部分供应商具备（kiross 有 PUT /api/my/webhook；kiroapp.io 只能在其站点后台
+// 手填）。做成可选接口而非塞进 replenishSupplier，是为了让没有该能力的实现不必
+// 提供一个只会返回错误的空方法。
+type webhookRegistrar interface {
+	SetWebhook(webhookURL string) error
+}
+
+// newEnabledReplenishSuppliers 为每家「已启用」的供应商构造客户端。
+//
+// 单家构造失败（例如密钥没填）不影响其余各家：失败原因记入 errs 由调用方展示，
+// 能用的照常返回。一家都没有时返回错误，调用方据此提示用户先配置。
+func newEnabledReplenishSuppliers(rc config.ReplenishConfig) ([]replenishSupplier, map[string]string, error) {
+	providers := rc.EnabledProviders()
+	if len(providers) == 0 {
+		return nil, nil, errNoEnabledSupplier
+	}
+
+	clients := make([]replenishSupplier, 0, len(providers))
+	errs := make(map[string]string)
+	for _, p := range providers {
+		client, err := newReplenishSupplier(p, rc.Supplier(p))
+		if err != nil {
+			errs[p] = err.Error()
+			continue
+		}
+		clients = append(clients, client)
+	}
+	if len(clients) == 0 {
+		return nil, errs, fmt.Errorf("no usable replenish supplier: %s", joinProviderErrors(errs))
+	}
+	return clients, errs, nil
+}
+
+// errNoEnabledSupplier 表示两家都没启用。区别于「启用了但配错了」，
+// 让面板能给出「先启用一家」而不是「凭证无效」这类误导性提示。
+var errNoEnabledSupplier = errors.New("no replenish supplier is enabled")
+
+// joinProviderErrors 把各家的失败原因拼成稳定顺序的一行，便于日志与面板展示。
+// 按 ReplenishProviders 的顺序输出，避免 map 遍历顺序随机导致摘要抖动。
+func joinProviderErrors(errs map[string]string) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(errs))
+	for _, p := range config.ReplenishProviders() {
+		if msg, ok := errs[p]; ok {
+			parts = append(parts, p+": "+msg)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // newClientOrderID 生成 32 位十六进制订单号（16 字节随机）。
@@ -116,43 +168,163 @@ func newClientOrderID() string {
 	return hex.EncodeToString(buf)
 }
 
-// replenishResult 是一次补号运行的结构化结果，返回给前端并写入运行态。
+// replenishResult 是单家供应商一次补号的结构化结果。
 type replenishResult struct {
 	Purchased int     `json:"purchased"`          // 供应商实际出 Key 数
 	Imported  int     `json:"imported"`           // 成功导入账号池的数量
 	Skipped   int     `json:"skipped"`            // 因重复被跳过的数量
 	Remaining float64 `json:"remaining"`          // 供应商侧剩余余额
 	Spent     float64 `json:"spent,omitempty"`    // 本次实际扣费（仅阶梯定价的供应商提供）
-	OrderID   string  `json:"orderId,omitempty"`  // 本次订单号（仅支持幂等的供应商有）
+	OrderID   string  `json:"orderId,omitempty"`  // 本次订单号
 	Provider  string  `json:"provider,omitempty"` // 本次使用的供应商
 	Summary   string  `json:"summary,omitempty"`  // 人类可读摘要
 }
 
-// replenishMu 串行化补号运行，避免手动触发与后台循环并发购买。
-var replenishMu sync.Mutex
-
-// runReplenishOnce 执行一次补号：从当前配置的供应商提取 count 个 Key 并导入账号池。
-// count <= 0 时使用配置的 BatchCount。提取前会用供应商的库存接口夹取可提取上限。
-func (h *Handler) runReplenishOnce(count int) (*replenishResult, error) {
-	replenishMu.Lock()
-	defer replenishMu.Unlock()
-	return h.replenishLocked(supplierClaimRequest{Count: count})
+// replenishBatchResult 是一次「所有启用的供应商各买一批」的汇总结果。
+//
+// 分开记录成功与失败，是因为两家相互独立：一家余额不足或接口故障时，另一家的
+// 成交必须照常生效并如实回报，不能被整体判为失败。
+type replenishBatchResult struct {
+	Results   []*replenishResult `json:"results"`             // 各家成功的结果
+	Errors    map[string]string  `json:"errors,omitempty"`    // 供应商标识 -> 失败原因
+	Purchased int                `json:"purchased"`           // 合计出 Key 数
+	Imported  int                `json:"imported"`            // 合计导入数
+	Skipped   int                `json:"skipped"`             // 合计跳过数
+	Summary   string             `json:"summary,omitempty"`   // 人类可读汇总
+	Attempted int                `json:"attempted,omitempty"` // 本轮尝试的供应商家数
 }
 
-// replenishLocked 是 runReplenishOnce 的内部实现，调用方需自行持有 replenishMu。
-// req.ClientOrderID 为空时，支持幂等的供应商会自行生成一个新订单号。
-func (h *Handler) replenishLocked(req supplierClaimRequest) (*replenishResult, error) {
+// ok 报告本轮是否至少有一家成功出货。
+func (r *replenishBatchResult) ok() bool { return len(r.Results) > 0 }
+
+// ErrorText 把各家的失败原因拼成一行，供写入运行态。全部成功时返回空串。
+//
+// 部分成功也会返回非空：一家挂了必须留下痕迹，否则面板只显示另一家的成功摘要，
+// 用户不会察觉有一路已经停止供货。
+func (r *replenishBatchResult) ErrorText() string {
+	if len(r.Errors) == 0 {
+		return ""
+	}
+	// 按供应商标识排序，保证摘要稳定（map 遍历顺序随机）。
+	providers := make([]string, 0, len(r.Errors))
+	for p := range r.Errors {
+		providers = append(providers, p)
+	}
+	sort.Strings(providers)
+
+	parts := make([]string, 0, len(providers))
+	for _, p := range providers {
+		parts = append(parts, fmt.Sprintf("%s: %s", p, r.Errors[p]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// SupplierPayload 投影逐家结果供前端展示：成功的带数量，失败的带原因。
+func (r *replenishBatchResult) SupplierPayload() []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(r.Results)+len(r.Errors))
+	for _, res := range r.Results {
+		item := map[string]interface{}{
+			"provider":  res.Provider,
+			"ok":        true,
+			"purchased": res.Purchased,
+			"imported":  res.Imported,
+			"skipped":   res.Skipped,
+			"remaining": res.Remaining,
+		}
+		if res.Spent > 0 {
+			item["spent"] = res.Spent
+		}
+		if res.OrderID != "" {
+			item["orderId"] = res.OrderID
+		}
+		out = append(out, item)
+	}
+	// 失败项同样按标识排序，避免每次刷新顺序跳动。
+	providers := make([]string, 0, len(r.Errors))
+	for p := range r.Errors {
+		providers = append(providers, p)
+	}
+	sort.Strings(providers)
+	for _, p := range providers {
+		out = append(out, map[string]interface{}{
+			"provider": p,
+			"ok":       false,
+			"error":    r.Errors[p],
+		})
+	}
+	return out
+}
+
+// replenishMu 串行化补号运行，避免手动触发、后台轮询与推送并发购买。
+var replenishMu sync.Mutex
+
+// runReplenishOnce 手动补号一次：所有启用的供应商各提取 count 个 Key。
+// count <= 0 时使用配置的 BatchCount。
+func (h *Handler) runReplenishOnce(count int) (*replenishBatchResult, error) {
+	replenishMu.Lock()
+	defer replenishMu.Unlock()
+	return h.replenishAll(count)
+}
+
+// replenishAll 让每个启用的供应商各买一批，返回汇总结果。调用方需持有 replenishMu。
+//
+// 逐家独立处理：任一家构造失败/库存为 0/下单失败都只记进 Errors，继续处理下一家。
+// 只有「没有任何启用的供应商」才返回 error——那是配置问题，不是上游故障。
+func (h *Handler) replenishAll(count int) (*replenishBatchResult, error) {
 	rc := config.GetReplenishConfig()
-	client, err := newReplenishSupplier(rc)
-	if err != nil {
-		return nil, err
+	enabled := rc.EnabledProviders()
+	if len(enabled) == 0 {
+		return nil, errors.New("no replenish supplier is enabled")
 	}
 
-	if req.Count <= 0 {
-		req.Count = rc.BatchCount
+	if count <= 0 {
+		count = rc.BatchCount
 	}
-	if req.Count <= 0 {
+	if count <= 0 {
 		return nil, errors.New("purchase count must be positive")
+	}
+
+	batch := &replenishBatchResult{Errors: map[string]string{}, Attempted: len(enabled)}
+	for _, provider := range enabled {
+		res, err := h.replenishOneProvider(provider, rc, supplierClaimRequest{Count: count})
+		if err != nil {
+			batch.Errors[provider] = err.Error()
+			logger.Warnf("[Replenish] provider=%s failed: %v", provider, err)
+			continue
+		}
+		batch.Results = append(batch.Results, res)
+		batch.Purchased += res.Purchased
+		batch.Imported += res.Imported
+		batch.Skipped += res.Skipped
+	}
+
+	batch.Summary = summarizeBatch(batch)
+	return batch, nil
+}
+
+// summarizeBatch 拼出一行人类可读摘要，成功与失败都列出，供面板与日志展示。
+func summarizeBatch(batch *replenishBatchResult) string {
+	parts := make([]string, 0, len(batch.Results)+len(batch.Errors))
+	for _, r := range batch.Results {
+		parts = append(parts, fmt.Sprintf("%s: purchased=%d imported=%d skipped=%d",
+			r.Provider, r.Purchased, r.Imported, r.Skipped))
+	}
+	// 失败按供应商固定顺序输出，避免 map 随机序让摘要每次都变样。
+	for _, p := range config.ReplenishProviders() {
+		if msg, bad := batch.Errors[p]; bad {
+			parts = append(parts, fmt.Sprintf("%s: FAILED (%s)", p, msg))
+		}
+	}
+	return fmt.Sprintf("total purchased=%d imported=%d skipped=%d | %s",
+		batch.Purchased, batch.Imported, batch.Skipped, strings.Join(parts, "; "))
+}
+
+// replenishOneProvider 从单家供应商提取并导入，返回该家的结果。
+// 调用方需持有 replenishMu。
+func (h *Handler) replenishOneProvider(provider string, rc config.ReplenishConfig, req supplierClaimRequest) (*replenishResult, error) {
+	client, err := newReplenishSupplier(provider, rc.Supplier(provider))
+	if err != nil {
+		return nil, err
 	}
 
 	// 用本轮可提取上限夹取请求量，避免必然失败的超量请求。stock 查询失败不致命，
@@ -161,7 +333,8 @@ func (h *Handler) replenishLocked(req supplierClaimRequest) (*replenishResult, e
 		if maxStock == 0 {
 			return nil, errors.New("supplier stock is 0; nothing to replenish")
 		}
-		logger.Infof("[Replenish] requested %d but supplier stock is %d; clamping", req.Count, maxStock)
+		logger.Infof("[Replenish] provider=%s requested %d but stock is %d; clamping",
+			provider, req.Count, maxStock)
 		req.Count = maxStock
 	}
 
@@ -169,10 +342,12 @@ func (h *Handler) replenishLocked(req supplierClaimRequest) (*replenishResult, e
 }
 
 // claimAndImport 按 req 从供应商提取 Key 并导入账号池，返回结构化结果。
-// req.ClientOrderID 只对支持幂等的供应商有意义：推送式补号（webhook）传入事件里的
-// 订单号，借助供应商侧幂等使 webhook 重试不会重复扣费。
+// ClientOrderID 为空时补一个新订单号，保证幂等键始终存在。
 // 调用方需自行持有 replenishMu。
 func (h *Handler) claimAndImport(client replenishSupplier, rc config.ReplenishConfig, req supplierClaimRequest) (*replenishResult, error) {
+	if strings.TrimSpace(req.ClientOrderID) == "" {
+		req.ClientOrderID = newClientOrderID()
+	}
 	claim, err := client.Claim(req)
 	if err != nil {
 		return nil, err
@@ -196,7 +371,7 @@ func (h *Handler) claimAndImport(client replenishSupplier, rc config.ReplenishCo
 
 	res.Summary = fmt.Sprintf("provider=%s purchased=%d imported=%d skipped=%d remaining=%.2f",
 		res.Provider, res.Purchased, res.Imported, res.Skipped, res.Remaining)
-	// 阶梯定价的供应商（kiroappio）自报本单扣费，附到摘要里让用户看到真实花费。
+	// 阶梯定价的供应商自报本单扣费，附到摘要里让用户看到真实花费。
 	if claim.Spent > 0 {
 		res.Summary += fmt.Sprintf(" spent=%.2f", claim.Spent)
 	}
@@ -277,6 +452,9 @@ func (h *Handler) backgroundReplenish(stop chan struct{}) {
 //  2. Low water mark (MinPoolSize): available accounts below the threshold.
 //     Buys BatchCount.
 //
+// 触发后所有启用的供应商各买一批（见 replenishAll）：只补一家的话，那家的 Key 被
+// 封时池子会再次见底，两家同时补才能保证始终有存活的 Key。
+//
 // All outcomes are persisted to the run state for the panel.
 func (h *Handler) maybeReplenish() {
 	rc := config.GetReplenishConfig()
@@ -289,24 +467,33 @@ func (h *Handler) maybeReplenish() {
 		return
 	}
 
-	logger.Infof("[Replenish] %s; replenishing %d from provider=%s",
-		reason, count, rc.EffectiveProvider())
+	providers := rc.EnabledProviders()
+	logger.Infof("[Replenish] %s; replenishing %d from each of %d provider(s): %s",
+		reason, count, len(providers), strings.Join(providers, ","))
 
-	res, err := h.runReplenishOnce(count)
+	batch, err := h.runReplenishOnce(count)
 	now := time.Now().Unix()
 	if err != nil {
 		_ = config.RecordReplenishRun(now, "", err.Error())
 		logger.Warnf("[Replenish] auto run failed (%s): %v", reason, err)
 		return
 	}
-	_ = config.RecordReplenishRun(now, res.Summary, "")
-	logger.Infof("[Replenish] auto run (%s): %s", reason, res.Summary)
+	// 部分失败也要留痕：摘要里已含各家成败，errMsg 只在全军覆没时填，
+	// 避免面板把「一家成交一家故障」显示成整体失败。
+	errMsg := ""
+	if !batch.ok() {
+		errMsg = "all providers failed"
+	}
+	_ = config.RecordReplenishRun(now, batch.Summary, errMsg)
+	logger.Infof("[Replenish] auto run (%s): %s", reason, batch.Summary)
 }
 
 // replenishTrigger decides whether a polling tick should replenish, returning the
 // number of keys to claim and a human-readable reason. Returns 0 when no trigger
 // fires. Split out from maybeReplenish so the trigger policy is unit-testable
 // without an HTTP round-trip or a live pool.
+//
+// 返回值是「每家」买多少，不是总量：两家并行，各买这么多。
 func replenishTrigger(rc config.ReplenishConfig, available int, health config.CredentialHealth) (int, string) {
 	// Trigger 1: every credential in the system is disabled/banned.
 	// Deliberately keyed on persisted enabled/ban state rather than the pool's
@@ -328,9 +515,9 @@ func replenishTrigger(rc config.ReplenishConfig, available int, health config.Cr
 	return 0, ""
 }
 
-// supplierWebhookEvent 是供应商推送的 webhook 载荷，兼容两家支持推送的供应商：
+// supplierWebhookEvent 是供应商推送的 webhook 载荷，兼容两家的字段命名：
 //
-//   - vendor（对接文档.md）：幂等键在 purchase_order_id。
+//   - kiross（kiro.ss.txt）：幂等键在 purchase_order_id，无批次概念。
 //   - kiroappio：幂等键在 client_order_id（由「批次 + 收件人」派生，重试恒定），
 //     另有 order_id 表示开号批次，带上它只提取该批次产出的 Key。
 //
@@ -338,7 +525,7 @@ func replenishTrigger(rc config.ReplenishConfig, available int, health config.Cr
 type supplierWebhookEvent struct {
 	Event   string `json:"event"`
 	EventID string `json:"event_id"`
-	// vendor 的幂等订单号。
+	// kiross 的幂等订单号。
 	PurchaseOrderID string `json:"purchase_order_id"`
 	// kiroappio 的幂等键与开号批次 id。
 	ClientOrderID string `json:"client_order_id"`
@@ -356,59 +543,61 @@ func (ev supplierWebhookEvent) idempotencyKey() string {
 	return strings.TrimSpace(ev.PurchaseOrderID)
 }
 
-// handleReplenishWebhookEvent 处理一条供应商 webhook 事件：
-//   - new_keys_available：用事件里的幂等键作为订单号提取并导入这批 Key；
-//     供应商侧幂等保证 webhook 重试不会重复扣费。kiroappio 还会带上 order_id，
-//     只提取该批次产出的 Key。
+// handleProviderWebhookEvent 处理来自 provider 的一条 webhook 事件。
+//
+// provider 由回调路径确定（每家一个专属 secret），因此推送方是可信的、无需从载荷里猜。
+// 关键语义：只向推送方下单，数量取该家自己的 WebhookCount 配置。另一家不受影响——
+// 它有自己的推送和自己的数量设置。
+//
+// 事件分派：
+//   - new_keys_available：按该家配置的数量提取并导入。复用事件里的幂等键，
+//     使推送重试/重复推送不会二次扣费。
 //   - all_keys_dead：仅记录。真正的「号全死了」补号由后台轮询按本地凭证状态触发
 //     （见 maybeReplenish），比信任上游事件更可靠，也避免与轮询重复购买。
-//   - key_revoked_abuse（kiroappio）：仅记录告警，Key 已被上游吊销。
+//   - key_revoked_abuse：仅记录告警，Key 已被上游吊销。
+//   - test/ping：连通性探测，不下单。
 //
-// 只有支持推送的供应商会触发购买。若当前选择的供应商不支持推送，事件只记录不购买——
-// 否则切换供应商后，旧供应商仍注册着回调就会在用户不知情的情况下继续扣费。
-//
-// 返回人类可读摘要写入运行态供面板展示。购买/导入错误会返回 error 但仍记录摘要。
-func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, error) {
+// 返回人类可读摘要写入该家的运行态供面板展示。
+func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhookEvent) (string, error) {
 	switch ev.Event {
 	case "new_keys_available":
 		available := ev.NewKeys
 		if available <= 0 {
+			// 文档明确 new_keys 为 0 时不要调取号接口。
 			return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", available)
-		}
-		orderID := ev.idempotencyKey()
-		if orderID == "" {
-			return "", errors.New("new_keys_available missing client_order_id/purchase_order_id")
 		}
 
 		rc := config.GetReplenishConfig()
-		// 当前供应商不支持推送：忽略事件，不动用任何供应商的余额。
-		if !rc.SupportsWebhook() {
-			summary := fmt.Sprintf("webhook new_keys_available 已忽略：当前供应商为 %s，未启用推送式补号",
-				rc.EffectiveProvider())
+		sc := rc.Supplier(provider)
+		// 该家被停用：不下单。回调地址可能还留在供应商后台，停用就该真的不再花钱。
+		if !sc.Enabled {
+			summary := fmt.Sprintf("webhook new_keys_available 已忽略：供应商 %s 当前已停用", provider)
 			logger.Infof("[Replenish] %s", summary)
 			return summary, nil
 		}
-		client, err := newReplenishSupplier(rc)
-		if err != nil {
-			return "", err
+
+		// 按该家配置的数量下单，并用 new_keys 夹取——它是本批次可提取上限，
+		// 超量请求必然失败。
+		count := rc.EffectiveWebhookCount(provider)
+		if count <= 0 {
+			return "", fmt.Errorf("provider %s has no webhook purchase count configured", provider)
+		}
+		if count > available {
+			logger.Infof("[Replenish] provider=%s webhookCount=%d clamped to new_keys=%d",
+				provider, count, available)
+			count = available
 		}
 
-		// new_keys 是「可提取上限」而非必须全取。若配置了单次上限，则夹取到该值，
-		// 让用户无需改动供应商侧即可控制每轮实际提取数量。<=0 表示不限制。
-		count := available
-		if rc.WebhookMaxCount > 0 && count > rc.WebhookMaxCount {
-			logger.Infof("[Replenish] webhook new_keys=%d clamped to webhookMaxCount=%d",
-				available, rc.WebhookMaxCount)
-			count = rc.WebhookMaxCount
+		req := supplierClaimRequest{
+			Count: count,
+			// 复用上游备好的幂等键；缺失时 claimAndImport 会补一个新的。
+			ClientOrderID: ev.idempotencyKey(),
+			BatchOrderID:  strings.TrimSpace(ev.OrderID),
 		}
 
 		// 与手动/后台补号串行，避免并发购买。
 		replenishMu.Lock()
-		res, err := h.claimAndImport(client, rc, supplierClaimRequest{
-			Count:         count,
-			ClientOrderID: orderID,
-			BatchOrderID:  strings.TrimSpace(ev.OrderID),
-		})
+		res, err := h.replenishOneProvider(provider, rc, req)
 		replenishMu.Unlock()
 		if err != nil {
 			return "", err
@@ -418,24 +607,24 @@ func (h *Handler) handleReplenishWebhookEvent(ev supplierWebhookEvent) (string, 
 		return summary, nil
 
 	case "all_keys_dead":
-		summary := fmt.Sprintf("webhook all_keys_dead: %d 个 Key 已失效", ev.Dead)
+		summary := fmt.Sprintf("webhook all_keys_dead (%s): %d 个 Key 已失效", provider, ev.Dead)
 		logger.Warnf("[Replenish] %s", summary)
 		return summary, nil
 
 	case "key_revoked_abuse":
 		// 上游因滥用吊销了 Key，只记录告警；本地失效由请求侧的封禁检测处理。
-		summary := "webhook key_revoked_abuse: 上游已吊销 Key（疑似滥用）"
+		summary := fmt.Sprintf("webhook key_revoked_abuse (%s): 上游已吊销 Key（疑似滥用）", provider)
 		if m := strings.TrimSpace(ev.Message); m != "" {
-			summary = "webhook key_revoked_abuse: " + m
+			summary = fmt.Sprintf("webhook key_revoked_abuse (%s): %s", provider, m)
 		}
 		logger.Warnf("[Replenish] %s", summary)
 		return summary, nil
 
 	case "test", "webhook_test", "ping":
 		// 供应商「测试推送」按钮发来的连通性探测，不触发购买，仅确认收到。
-		summary := "webhook 连通性测试成功"
+		summary := fmt.Sprintf("webhook 连通性测试成功（%s）", provider)
 		if strings.TrimSpace(ev.Message) != "" {
-			summary = "webhook 测试：" + strings.TrimSpace(ev.Message)
+			summary = fmt.Sprintf("webhook 测试（%s）：%s", provider, strings.TrimSpace(ev.Message))
 		}
 		logger.Infof("[Replenish] %s", summary)
 		return summary, nil

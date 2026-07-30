@@ -417,9 +417,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 
 	// 公开入站 webhook：供应商推送补号事件。无管理密码，由路径内嵌 secret 鉴权。
+	// 路径形如 /replenish/webhook/<provider>/<secret>，每家供应商一个专属地址，
+	// 便于单独轮换密钥；secret 同时用于反查是哪家推送的。
 	case strings.HasPrefix(path, "/replenish/webhook/") && r.Method == "POST":
-		secret := strings.TrimPrefix(path, "/replenish/webhook/")
-		h.handleReplenishWebhook(w, r, secret)
+		tail := strings.TrimPrefix(path, "/replenish/webhook/")
+		h.handleReplenishWebhook(w, r, tail)
 
 	// 管理端点
 	case path == "/admin" || path == "/admin/":

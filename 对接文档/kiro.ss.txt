@@ -1,0 +1,67 @@
+取号文档
+通过 API 提取已分配的 Key
+×
+外部程序使用个人 API Key 提取已经分配给当前用户、且仍在有效批次内的 Key。提取时不会再次扣费。
+
+循环预订与 count 的关系：count 是本次请求的提取数量，不会被预订数量固定。 比如本批分配 10 个，可以按 3、4、3 分三次提取，也可以一次提取 10 个。每次新的提取请求都要使用新的订单号。
+POST
+/api/my/purchase
+count
+本次领取数量，范围 1–1000。
+client_order_id
+32 位十六进制订单号，用于安全重试；也可通过 Idempotency-Key 请求头提供。
+请求头使用 X-API-Key: usr-xxx。同一用户以相同订单号和相同数量重试，会返回第一次成功时的原始结果。
+同一用户以相同订单号和相同数量重试，会返回第一次成功时的原始结果；同一个订单号改用其他 count 会返回 409。 本批分配 10 个时，可以使用三个不同订单号分别请求 3、4、3 个。
+请求示例
+POST /api/my/purchase
+X-API-Key: usr-xxx
+Content-Type: application/json
+
+{
+  "count": 5,
+  "client_order_id": "0123456789abcdef0123456789abcdef"
+}
+成功响应
+{
+  "client_order_id": "0123456789abcdef0123456789abcdef",
+  "purchased": 2,
+  "remaining": 80,
+  "keys": [
+    {"key": "ksk_..."},
+    {"key": "ksk_..."}
+  ]
+}
+200
+领取成功，库存不足时返回当前实际可领取数量；提取不再次扣费。
+400
+数量或订单号格式不正确。
+401
+API Key 缺失或无效。
+409
+同一订单号重试时使用了不同的领取数量。
+
+
+Hook 文档
+配置通知地址与处理推送事件
+×
+API 配置
+PUT /api/my/webhook
+X-API-Key: usr-xxx
+Content-Type: application/json
+
+{"webhook_url":"http://your-server/hook"}
+
+POST /api/my/webhook/test
+X-API-Key: usr-xxx
+每个用户只保留一个 Hook 地址。支持 HTTP 和 HTTPS，最多安全跟随 3 次重定向，投递为 POST JSON，不要求签名。
+新 Key 就绪
+{
+  "event": "new_keys_available",
+  "event_id": "32位ID",
+  "purchase_order_id": "32位ID",
+  "message": "新一轮 10 个 Key 已就绪；自动提取时请把 purchase_order_id 原样传给 /api/my/purchase",
+  "new_keys": 10
+}
+新批次完成分配后，所有本批有效循环预订且已配置 Hook 的用户都会收到通知。new_keys 是当前用户本批实际分配数量； new_keys 为 0 时不要调用取号接口。new_keys 大于 0 时，可以直接使用 purchase_order_id 作为 client_order_id， 也可以自行生成新的 32 位十六进制订单号。每次新的提取请求使用新的订单号；同一订单号重试时 count 必须保持不变。 event_id 与 purchase_order_id 相同，Hook 重试时保持不变。
+全部 Key 失效
+{"event":"all_keys_dead","event_id":"32位ID","message":"本轮全部 5 个 Key 已失效","dead":5}

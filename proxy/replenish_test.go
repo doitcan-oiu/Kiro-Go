@@ -1,17 +1,18 @@
 package proxy
 
-// 补号框架的测试。
+// 补号框架的测试（与具体供应商无关的那一层）。
 //
-// 三个供应商客户端已移除，因此这里不再有任何上游 HTTP 打桩，只覆盖与供应商无关的
-// 框架层：
-//  1. newReplenishSupplier 在没有任何实现时返回错误（而不是 panic 或静默不补）。
-//  2. replenishTrigger 的两个触发条件（全部凭证禁用 / 低水位）。
-//  3. CredentialHealth.AllDisabled 与补号配置访问器。
+// 覆盖：
+//  1. newReplenishSupplier 按标识选出正确的客户端，未知标识报错。
+//  2. newEnabledReplenishSuppliers 的「两家并行」语义：一家配错不拖累另一家。
+//  3. replenishTrigger 的两个触发条件（全部凭证禁用 / 低水位）。
+//  4. CredentialHealth.AllDisabled 与各供应商配置访问器。
 //
-// 接回供应商时，把客户端自身的请求构造/响应解析测试放到各自的
-// replenish_<provider>_test.go 里，本文件只测框架。
+// 两家客户端自身的请求构造/响应解析测试见 replenish_kiross_test.go 与
+// replenish_kiroappio_test.go。
 
 import (
+	"os"
 	"testing"
 
 	"kiro-go/config"
@@ -19,27 +20,154 @@ import (
 
 // --- 供应商工厂 ---
 
-// 没有任何供应商实现时，工厂必须报错。这是当前唯一正确的行为：宁可让手动补号
-// 返回可见的错误、让后台轮询把错误写进运行态，也不能静默地「成功但没补到号」。
-func TestNewReplenishSupplierWithNoProvidersErrors(t *testing.T) {
-	// 覆盖旧配置可能残留的各种 provider 值：都不该再选出实现。
-	for _, provider := range []string{"", "default", "kiroapp", "kiroapp.cc", "kiroappio", "kiroapp.io", "whatever"} {
-		t.Run("provider="+provider, func(t *testing.T) {
-			rc := config.ReplenishConfig{
-				Provider: provider,
-				// 连接信息齐全也不该改变结果：没有实现就是没有实现。
-				BaseURL: "https://vendor.example.com", ApiKey: "usr-x",
-				KiroappApiKey: "k-1", KiroappioApiKey: "km_1",
+func TestNewReplenishSupplierSelectsByProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		sc       config.SupplierConfig
+		wantName string
+		wantErr  bool
+	}{
+		{
+			name:     "kiross",
+			provider: "kiross",
+			sc:       config.SupplierConfig{BaseURL: "https://vendor.example.com", ApiKey: "usr-x"},
+			wantName: config.ReplenishProviderKiross,
+		},
+		{
+			// 旧配置里这家叫 "default"，升级后应仍能识别。
+			name:     "legacy default alias maps to kiross",
+			provider: "default",
+			sc:       config.SupplierConfig{BaseURL: "https://vendor.example.com", ApiKey: "usr-x"},
+			wantName: config.ReplenishProviderKiross,
+		},
+		{
+			name:     "kiroappio",
+			provider: "kiroappio",
+			sc:       config.SupplierConfig{ApiKey: "km_1"},
+			wantName: config.ReplenishProviderKiroappio,
+		},
+		{
+			name:     "kiroapp.io alias",
+			provider: "kiroapp.io",
+			sc:       config.SupplierConfig{ApiKey: "km_1"},
+			wantName: config.ReplenishProviderKiroappio,
+		},
+		{
+			// kiross 没有官方默认地址，缺 baseURL 必须报错而不是打一个空地址。
+			name:     "kiross without baseUrl errors",
+			provider: "kiross",
+			sc:       config.SupplierConfig{ApiKey: "usr-x"},
+			wantErr:  true,
+		},
+		{
+			name:     "kiross without apiKey errors",
+			provider: "kiross",
+			sc:       config.SupplierConfig{BaseURL: "https://vendor.example.com"},
+			wantErr:  true,
+		},
+		{
+			// kiroappio 有默认地址，所以只缺令牌时报错。
+			name:     "kiroappio without token errors",
+			provider: "kiroappio",
+			sc:       config.SupplierConfig{},
+			wantErr:  true,
+		},
+		{
+			name:     "unknown provider errors",
+			provider: "nope",
+			sc:       config.SupplierConfig{ApiKey: "x"},
+			wantErr:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := newReplenishSupplier(tc.provider, tc.sc)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got client %T", client)
+				}
+				return
 			}
-			client, err := newReplenishSupplier(rc)
-			if err == nil {
-				t.Fatalf("expected an error, got client %T", client)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
-			if client != nil {
-				t.Errorf("client = %T, want nil alongside the error", client)
+			if got := client.ProviderName(); got != tc.wantName {
+				t.Errorf("ProviderName() = %q, want %q", got, tc.wantName)
 			}
 		})
 	}
+}
+
+// 核心语义：两家并行。只启用一家时只构造一家；一家凭证配错时另一家照常可用。
+func TestNewEnabledReplenishSuppliers(t *testing.T) {
+	good := config.SupplierConfig{Enabled: true, BaseURL: "https://vendor.example.com", ApiKey: "usr-x"}
+	goodIO := config.SupplierConfig{Enabled: true, ApiKey: "km_1"}
+
+	t.Run("both enabled yields both", func(t *testing.T) {
+		rc := config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross:    good,
+			config.ReplenishProviderKiroappio: goodIO,
+		}}
+		clients, errs, err := newEnabledReplenishSuppliers(rc)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(clients) != 2 {
+			t.Fatalf("got %d clients, want 2", len(clients))
+		}
+		if len(errs) != 0 {
+			t.Errorf("errs = %v, want empty", errs)
+		}
+	})
+
+	t.Run("disabled provider is skipped", func(t *testing.T) {
+		rc := config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross:    good,
+			config.ReplenishProviderKiroappio: {Enabled: false, ApiKey: "km_1"},
+		}}
+		clients, _, err := newEnabledReplenishSuppliers(rc)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(clients) != 1 || clients[0].ProviderName() != config.ReplenishProviderKiross {
+			t.Fatalf("got %d clients (%v), want only kiross", len(clients), clients)
+		}
+	})
+
+	// 关键用例：一家配错不能让另一家也补不了号。
+	t.Run("one misconfigured still yields the other", func(t *testing.T) {
+		rc := config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross:    {Enabled: true, ApiKey: "usr-x"}, // 缺 baseURL
+			config.ReplenishProviderKiroappio: goodIO,
+		}}
+		clients, errs, err := newEnabledReplenishSuppliers(rc)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(clients) != 1 || clients[0].ProviderName() != config.ReplenishProviderKiroappio {
+			t.Fatalf("got %d clients, want only kiroappio", len(clients))
+		}
+		if errs[config.ReplenishProviderKiross] == "" {
+			t.Error("the misconfigured provider's reason should be reported")
+		}
+	})
+
+	t.Run("none enabled errors", func(t *testing.T) {
+		if _, _, err := newEnabledReplenishSuppliers(config.ReplenishConfig{}); err == nil {
+			t.Fatal("expected an error when no supplier is enabled")
+		}
+	})
+
+	t.Run("all enabled but misconfigured errors", func(t *testing.T) {
+		rc := config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross: {Enabled: true},
+		}}
+		if _, _, err := newEnabledReplenishSuppliers(rc); err == nil {
+			t.Fatal("expected an error when every enabled supplier fails to construct")
+		}
+	})
 }
 
 // --- 触发策略 ---
@@ -197,57 +325,160 @@ func TestCredentialHealthAllDisabled(t *testing.T) {
 
 // --- 配置访问器 ---
 
-func TestReplenishConfigActiveConnection(t *testing.T) {
+// 两家的连接信息必须完全独立：读某一家不会串到另一家，改一家也不影响另一家。
+// 这是「两家同时买」的前提，串了就会用错密钥打错地址。
+func TestSupplierConfigIsolation(t *testing.T) {
 	rc := config.ReplenishConfig{
-		BaseURL: "https://vendor.example.com", ApiKey: "usr-x",
-		KiroappBaseURL: "", KiroappApiKey: "k-1",
-		KiroappioBaseURL: "", KiroappioApiKey: "km_1",
+		Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross: {
+				Enabled: true, BaseURL: "https://kiro.ss.example.com", ApiKey: "usr-x",
+			},
+			config.ReplenishProviderKiroappio: {
+				Enabled: true, ApiKey: "km_1",
+			},
+		},
 	}
 
-	// 默认（空 Provider）走 vendor。
-	if got := rc.ActiveBaseURL(); got != "https://vendor.example.com" {
-		t.Errorf("vendor ActiveBaseURL() = %q", got)
+	if got := rc.SupplierBaseURL(config.ReplenishProviderKiross); got != "https://kiro.ss.example.com" {
+		t.Errorf("kiross SupplierBaseURL() = %q", got)
 	}
-	if got := rc.ActiveApiKey(); got != "usr-x" {
-		t.Errorf("vendor ActiveApiKey() = %q", got)
+	if got := rc.Supplier(config.ReplenishProviderKiross).ApiKey; got != "usr-x" {
+		t.Errorf("kiross ApiKey = %q", got)
 	}
-	if !rc.SupportsWebhook() {
-		t.Error("vendor should support webhook")
+	// kiroappio 的 baseURL 留空，应回落到官方默认地址。
+	if got := rc.SupplierBaseURL(config.ReplenishProviderKiroappio); got != config.DefaultKiroappioBaseURL {
+		t.Errorf("kiroappio SupplierBaseURL() = %q, want default", got)
 	}
-	// 只有 vendor 能通过 API 自动注册回调。
-	if !rc.SupportsWebhookAutoRegister() {
-		t.Error("vendor should support webhook auto-register")
+	if got := rc.Supplier(config.ReplenishProviderKiroappio).ApiKey; got != "km_1" {
+		t.Errorf("kiroappio ApiKey = %q", got)
 	}
+	// kiross 没有官方默认地址，留空必须返回空串而不是瞎猜一个。
+	rc.Suppliers[config.ReplenishProviderKiross] = config.SupplierConfig{Enabled: true, ApiKey: "usr-x"}
+	if got := rc.SupplierBaseURL(config.ReplenishProviderKiross); got != "" {
+		t.Errorf("kiross with empty baseURL = %q, want empty", got)
+	}
+}
 
-	// 切到 kiroapp 后连接信息应整体切换，且 vendor 的密钥仍保留在配置里。
-	rc.Provider = "kiroapp"
-	if got := rc.ActiveBaseURL(); got != config.DefaultKiroappBaseURL {
-		t.Errorf("kiroapp ActiveBaseURL() = %q, want default", got)
+// 只有 kiross 能通过 API 注册回调；kiroapp.io 必须手工填，不能谎报有该能力，
+// 否则面板会给出一个点了必然失败的按钮。
+func TestSupportsWebhookAutoRegister(t *testing.T) {
+	if !config.SupportsWebhookAutoRegister(config.ReplenishProviderKiross) {
+		t.Error("kiross should support webhook auto-register")
 	}
-	if got := rc.ActiveApiKey(); got != "k-1" {
-		t.Errorf("kiroapp ActiveApiKey() = %q", got)
-	}
-	if rc.SupportsWebhook() {
-		t.Error("kiroapp must not report webhook support")
-	}
-
-	// kiroapp.io 能收推送，但回调地址只能在其站点后台手填。
-	rc.Provider = "kiroappio"
-	if got := rc.ActiveBaseURL(); got != config.DefaultKiroappioBaseURL {
-		t.Errorf("kiroappio ActiveBaseURL() = %q, want default", got)
-	}
-	if got := rc.ActiveApiKey(); got != "km_1" {
-		t.Errorf("kiroappio ActiveApiKey() = %q", got)
-	}
-	if !rc.SupportsWebhook() {
-		t.Error("kiroappio should support webhook (inbound push)")
-	}
-	if rc.SupportsWebhookAutoRegister() {
+	if config.SupportsWebhookAutoRegister(config.ReplenishProviderKiroappio) {
 		t.Error("kiroappio has no register API; must not claim auto-register")
 	}
+}
 
-	// 三个供应商的凭证互不覆盖。
-	if rc.ApiKey != "usr-x" || rc.KiroappApiKey != "k-1" {
-		t.Error("switching provider must not clear the other providers' keys")
+// EnabledProviders 只返回启用的那些，且顺序稳定（决定补号与面板顺序）。
+func TestEnabledProviders(t *testing.T) {
+	tests := []struct {
+		name string
+		rc   config.ReplenishConfig
+		want []string
+	}{
+		{
+			name: "none configured",
+			rc:   config.ReplenishConfig{},
+			want: nil,
+		},
+		{
+			name: "only kiroappio",
+			rc: config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+				config.ReplenishProviderKiross:    {Enabled: false, ApiKey: "usr-x"},
+				config.ReplenishProviderKiroappio: {Enabled: true, ApiKey: "km_1"},
+			}},
+			want: []string{config.ReplenishProviderKiroappio},
+		},
+		{
+			name: "both enabled keeps declared order",
+			rc: config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+				config.ReplenishProviderKiroappio: {Enabled: true, ApiKey: "km_1"},
+				config.ReplenishProviderKiross:    {Enabled: true, ApiKey: "usr-x"},
+			}},
+			want: []string{config.ReplenishProviderKiross, config.ReplenishProviderKiroappio},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.rc.EnabledProviders()
+			if len(got) != len(tc.want) {
+				t.Fatalf("EnabledProviders() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("EnabledProviders() = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// 每家推送时买几个：优先用该家自己的设置，未设置才回退到全局 BatchCount。
+// 这是本次需求的核心配置项，必须两家互不影响。
+func TestEffectiveWebhookCount(t *testing.T) {
+	rc := config.ReplenishConfig{
+		BatchCount: 5,
+		Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiross:    {Enabled: true, WebhookCount: 3},
+			config.ReplenishProviderKiroappio: {Enabled: true}, // 未设置 -> 回退
+		},
+	}
+	if got := rc.EffectiveWebhookCount(config.ReplenishProviderKiross); got != 3 {
+		t.Errorf("kiross EffectiveWebhookCount() = %d, want 3 (per-supplier)", got)
+	}
+	if got := rc.EffectiveWebhookCount(config.ReplenishProviderKiroappio); got != 5 {
+		t.Errorf("kiroappio EffectiveWebhookCount() = %d, want 5 (global fallback)", got)
+	}
+}
+
+// 旧版单选配置必须能自动迁移，否则升级后用户的密钥「凭空消失」还要重填。
+func TestMigrateLegacyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.json"
+	// 手写一份旧结构：Provider 选中 kiroapp.io，两家的平铺凭证都在。
+	legacy := `{"replenish":{"provider":"kiroappio",` +
+		`"baseUrl":"https://vendor.example.com","apiKey":"usr-x",` +
+		`"kiroappioApiKey":"km_1","webhookMaxCount":7,` +
+		`"webhookSecret":"deadbeef","enabled":true,"batchCount":4}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+	if err := config.Init(path); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+
+	rc := config.GetReplenishConfig()
+
+	// 被选中的那家应启用，并继承旧的单次提取上限作为推送购买数。
+	ioCfg := rc.Supplier(config.ReplenishProviderKiroappio)
+	if !ioCfg.Enabled {
+		t.Error("previously selected provider should be enabled after migration")
+	}
+	if ioCfg.ApiKey != "km_1" {
+		t.Errorf("kiroappio ApiKey = %q, want km_1 preserved", ioCfg.ApiKey)
+	}
+	if ioCfg.WebhookCount != 7 {
+		t.Errorf("kiroappio WebhookCount = %d, want 7 from legacy webhookMaxCount", ioCfg.WebhookCount)
+	}
+	if ioCfg.WebhookSecret != "deadbeef" {
+		t.Errorf("kiroappio WebhookSecret = %q, want the legacy secret reused", ioCfg.WebhookSecret)
+	}
+
+	// 未被选中的那家：凭证要保住，但不能自动启用——否则升级即开始向它扣费。
+	ks := rc.Supplier(config.ReplenishProviderKiross)
+	if ks.ApiKey != "usr-x" {
+		t.Errorf("kiross ApiKey = %q, want usr-x preserved", ks.ApiKey)
+	}
+	if ks.BaseURL != "https://vendor.example.com" {
+		t.Errorf("kiross BaseURL = %q, want preserved", ks.BaseURL)
+	}
+	if ks.Enabled {
+		t.Error("provider that was not selected must stay disabled after migration")
+	}
+
+	// 策略字段保持原样。
+	if !rc.Enabled || rc.BatchCount != 4 {
+		t.Errorf("policy fields lost: enabled=%v batchCount=%d", rc.Enabled, rc.BatchCount)
 	}
 }

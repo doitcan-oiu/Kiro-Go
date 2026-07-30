@@ -1,0 +1,280 @@
+API 文档
+用 API 令牌进行程序化调用，一个请求头搞定读写。
+
+Base URL
+http://kiroapp.io
+鉴权
+Authorization: Bearer km_…
+到 设置 → API 令牌 生成令牌（明文只显示一次），之后每个请求带上上面的请求头即可——无需 Cookie、无需 CSRF，读写一致。令牌只能调 /api/me/* 前台接口。
+
+curl http://kiroapp.io/api/me/stock \
+  -H "Authorization: Bearer km_xxxxxxxx"
+分页信封
+列表接口统一返回 {items, total, page, page_size, pages}，参数 ?page=1&page_size=50（上限 500）。
+错误格式
+非 2xx 一律返回 {"error": "人类可读的原因"}。401 = 令牌无效/过期，403 = 无权限，429 = 触发限速。
+安全边界
+令牌泄露到设置页吊销即可；管理端接口不接受令牌，必须浏览器会话登录。
+账户与积分
+GET
+/api/me/profile
+当前用户档案
+返回令牌对应用户的完整档案（余额、限购、通知配置等）。
+
+响应示例 · 200
+{
+  "user": {
+    "id": "a8d5e9d5-…",
+    "name": "alice",
+    "email": "alice@example.com",
+    "balance": 2060,
+    "min_purchase": 1,
+    "max_purchase": 10,
+    "notify_new_batch": true,
+    "created_at": "2026-07-29T09:51:32+09:00"
+  }
+}
+GET
+/api/me/ledger
+积分流水
+带符号的每笔积分变动与运行余额，附累计收支汇总。
+
+Query 参数
+参数	类型	必填	说明
+page	int	可选	页码，默认 1
+page_size	int	可选	每页条数，默认 50，上限 500
+type	string	可选	按类型过滤：stripe_recharge / redeem_credit / purchase_debit / supplier_payout / open_fee / warranty_refund / admin_adjust …
+响应示例 · 200
+{
+  "items": [
+    {
+      "seq": 2,
+      "type": "stripe_recharge",
+      "amount": 60,
+      "balance_after": 2060,
+      "ref_type": "recharge_order",
+      "ref_id": "47166cdc-…",
+      "memo": "Stripe 充值",
+      "created_at": "2026-07-30T10:45:29+09:00"
+    }
+  ],
+  "total": 2, "page": 1, "page_size": 50, "pages": 1,
+  "summary": { "total_in": 2060, "total_out": 0 }
+}
+POST
+/api/me/redeem
+兑换码充值
+Body 参数（JSON）
+参数	类型	必填	说明
+code	string	必填	兑换码
+响应示例 · 200
+{ "quota": 100, "replayed": false }
+•
+同一个码重复兑换返回 replayed: true，不重复到账。
+•
+码不存在返回 404；已被他人使用返回 409。
+提取密钥（消费侧）
+GET
+/api/me/stock
+库存与报价
+可提取数量、在售价格区间与我的余额，下单前先查它。单价按母号累计产量分档，price 是最低价。
+
+响应示例 · 200
+{
+  "stock": 120,
+  "price": 30,        // = price_min，向后兼容字段
+  "price_min": 30,
+  "price_max": 65,
+  "balance": 2060
+}
+POST
+/api/me/purchase
+下单购买（幂等）
+扣积分并返回密钥明文。单价按【产出该 key 的母号累计产量】分档，同一单里各 key 可能不同价，便宜的先出货。幂等靠 client_order_id：相同 id 重放返回字节一致的原响应，绝不重复扣款。
+
+Body 参数（JSON）
+参数	类型	必填	说明
+count	int	必填	购买数量
+client_order_id	string	必填	32 位十六进制，调用方生成并保存，用于幂等重试
+order_id	string	可选	可选：Webhook 推送里的开号批次 id，只拉取该批次产出的 key
+请求示例
+curl -X POST http://kiroapp.io/api/me/purchase \
+  -H "Authorization: Bearer km_xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"count":5,"client_order_id":"a1b2c3d4e5f60718293a4b5c6d7e8f90"}'
+响应示例 · 200
+{
+  "purchased": 5,
+  "requested": 5,
+  "remaining": 115,
+  "unit_price": 38,      // 本单实际均价 = total_debit / purchased
+  "total_debit": 190,    // 实际扣费总额，权威数字
+  "order_id": "0d9f…",
+  "keys": [
+    {
+      "key": "sk-…",
+      "account": "user-…",
+      "password": "…",
+      "issuer_url": "https://…",
+      "price": 30        // 这一个 key 实际扣了多少
+    }
+  ],
+  "replayed": false
+}
+•
+同 client_order_id 换 count 重放返回 409。
+•
+余额不足时按买得起的数量成交（purchased < requested）；有货但一个都买不起返回 403。
+•
+阶梯定价下前端无法精确预估总价，以 total_debit 与每个 key 的 price 为准。
+•
+网络超时后用同一个 client_order_id 重试即可，安全。
+GET
+/api/me/orders
+我的订单
+历史提取订单，分页信封。
+
+Query 参数
+参数	类型	必填	说明
+page	int	可选	页码
+page_size	int	可选	每页条数
+GET
+/api/me/keys
+我的密钥
+分页信封。history=1 时含已失效的密钥。
+
+Query 参数
+参数	类型	必填	说明
+history	0 | 1	可选	1 = 含已失效的密钥；默认只返回存活的
+page	int	可选	页码，默认 1
+page_size	int	可选	每页条数，默认 50，上限 500
+响应示例 · 200
+{
+  "items": [
+    {
+      "id": "…",
+      "key_value": "sk-…",
+      "account": "user-…",
+      "password": "…",
+      "issuer_url": "https://…",
+      "status": "sold",
+      "purchased_at": "2026-07-30T09:00:00+09:00",
+      "created_at": "2026-07-30T08:12:00+09:00"
+    }
+  ],
+  "total": 42, "page": 1, "page_size": 50, "pages": 1
+}
+GET
+/api/me/keys/created-at
+最早密钥时间
+最早一条密钥的创建时间与总数，估算账龄用。
+
+响应示例 · 200
+{ "created_at": "2026-07-29T10:00:00+09:00", "count": 42 }
+供应侧（我的号池）
+POST
+/api/me/accounts
+提交母号
+提交自己的 AWS 母号，提交即可用（无审核流程）。凭证只进不出，任何读接口都不会返回。
+
+Body 参数（JSON）
+参数	类型	必填	说明
+access_key	string	必填	AWS Access Key
+secret_key	string	必填	AWS Secret Key
+region	string	可选	默认 us-east-1
+note	string	可选	备注
+subscription_tier	string	可选	开号订阅档位：20 / 40 / 100 / 200，留空跟随平台默认
+gen_mode	string	可选	开号模式：group | user
+响应示例 · 200
+{ "id": "…", "generating": 0 }
+GET
+/api/me/accounts
+号池列表
+我的全部母号（分页，含存活凭证数）。
+
+PATCH
+/api/me/accounts/{id}
+更新母号
+Body 参数（JSON）
+参数	类型	必填	说明
+note	string	可选	备注
+auto_open	bool	可选	自动发车开关
+target_alive	int	可选	常驻凭证数 0..50；与 auto_open 同时生效
+DELETE
+/api/me/accounts/{id}
+删除母号
+•
+名下仍有未失效密钥时删除会被拒绝。
+POST
+/api/me/accounts/{id}/generate
+手动开号
+Body 参数（JSON）
+参数	类型	必填	说明
+count	int	必填	开号数量，上限见平台设置（默认 100）
+•
+产出 key > 0 才收开号手续费，管理员免。
+PUT
+/api/me/refill-config
+自动发车配置
+号池级低水位补号：私有池存活凭证跌破低水位就自动开一批。GET 同路径读取当前配置。
+
+Body 参数（JSON）
+参数	类型	必填	说明
+refill_enabled	bool	可选	总开关
+refill_low_watermark	int	可选	低水位阈值
+refill_batch	int	可选	每批开号数
+refill_auto_check	bool	可选	自动检测开关
+API 令牌
+GET
+/api/me/tokens
+令牌列表
+不含明文，只有展示用前缀。
+
+POST
+/api/me/tokens
+签发令牌
+Body 参数（JSON）
+参数	类型	必填	说明
+name	string	可选	名称，便于区分用途
+expires_in_days	int	可选	有效期天数，0 = 永不过期，最长 365
+响应示例 · 200
+{
+  "token": "km_xxxxxxxx…",   // 明文只在这里返回一次
+  "item": { "id": "…", "name": "生产脚本", "prefix": "km_xxxxxxxx", "expires_at": "2026-10-28T…" }
+}
+•
+令牌只能调 /api/me/* 前台接口，/api/admin/* 一律 403。
+DELETE
+/api/me/tokens/{id}
+吊销令牌
+•
+立即生效，使用中的调用开始返回 401。
+事件推送
+WEBHOOK
+批次开号完成后向你配置的地址推送
+POST <your_webhook_url>
+Content-Type: application/json
+
+// event: new_keys_available | all_keys_dead | key_revoked_abuse | test
+{
+  "event": "new_keys_available",
+  "event_id": "<去重用的唯一 id，每次推送不同>",
+  "order_id": "<开号批次 id>",
+  "client_order_id": "d5c4fd9460b70fb8e944bd7faa519896",
+  "mother_id": "<母号 id>",
+  "visibility": "public",
+  "message": "母号新开号完成，20 个 Key 就绪",
+  "new_keys": 20
+}
+
+// 收到后直接下单：两个 id 原样带上，不必自己生成幂等键
+POST /api/me/purchase
+{ "count": 20, "order_id": "<order_id>", "client_order_id": "<client_order_id>" }
+•
+载荷不含密钥明文。收到后把 order_id 传给 POST /api/me/purchase 即可只拉取该批次的 key。
+•
+client_order_id 是替你备好的幂等键，无需自己生成。它由（批次 + 收件人）确定性派生，推送重试、重复推送、服务重启后都是同一个值——拉取超时后原样重发即命中幂等重放，不会二次扣费。
+•
+用 event_id 去重：推送失败会重试，同一事件可能送达多次。
+•
+回调地址在 设置 → Webhook 配置，可先发一条 test 事件验证连通。

@@ -546,6 +546,18 @@ func Load() error {
 			return err
 		}
 	}
+
+	// Migration: legacy single-provider replenish config → per-supplier map.
+	// Older deployments picked one supplier via `provider` and stored each
+	// supplier's credentials in flat sibling fields. The new model runs every
+	// enabled supplier in parallel, so the flat fields move into Suppliers.
+	// Only the previously selected supplier is enabled, keeping the others'
+	// credentials on file without silently starting to spend against them.
+	if cfg.Replenish.migrateLegacy() {
+		if err := saveLocked(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

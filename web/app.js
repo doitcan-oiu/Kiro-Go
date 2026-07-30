@@ -3017,13 +3017,16 @@
   }
 
   // ---- 在线补号（Replenish）----
+  //
+  // 两家供应商并行：各自独立的开关、凭证、推送购买数与回调地址。
+  // 卡片由 renderReplenishSuppliers 按后端返回的 suppliers 数组动态生成，
+  // 因此新增一家供应商前端无需改动。
   async function loadReplenish() {
     try {
       const res = await api('/replenish');
       const d = await res.json();
       const setVal = (id, v) => { const el = $(id); if (el) el.value = v; };
       const setChk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
-      // 供应商已全部移除，连接信息与推送式补号的字段不再回填（面板上也已无对应控件）。
       setVal('replenishRegion', d.region || '');
       setChk('replenishEnabled', d.enabled);
       setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
@@ -3031,12 +3034,94 @@
       setVal('replenishInterval', d.intervalSeconds != null ? d.intervalSeconds : 0);
       setChk('replenishAllDead', d.allDeadReplenish);
       setVal('replenishAllDeadCount', d.allDeadCount != null ? d.allDeadCount : 0);
+      setVal('replenishPublicBaseUrl', d.publicBaseUrl || '');
+      renderReplenishSuppliers(d.suppliers || []);
       renderReplenishStatus(d);
       renderReplenishCredentials(d);
     } catch (e) {
       console.warn('[Replenish] load failed', e);
     }
   }
+
+  // 各供应商的展示名。未知标识回退到原始 id，保证新增供应商也能显示。
+  const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io' };
+  function replenishProviderLabel(p) { return REPLENISH_PROVIDER_LABELS[p] || p; }
+
+  // renderReplenishSuppliers 为每家供应商渲染一张配置卡片。
+  // 密钥输入框始终留空：有值时用掩码作占位，空提交表示保持原密钥不变。
+  function renderReplenishSuppliers(list) {
+    const box = $('replenishSuppliers');
+    if (!box) return;
+    if (!list.length) {
+      box.innerHTML = '<p class="text-sm muted-text">' + t('replenish.noProviders') + '</p>';
+      return;
+    }
+    box.innerHTML = list.map(s => {
+      const p = escapeHtml(s.provider);
+      const keyPlaceholder = s.hasApiKey ? (s.apiKeyMasked || '••••••') : t('replenish.apiKeyPlaceholder');
+      // 回调地址：已生成密钥且配了公网地址才有值。
+      const callback = s.callbackUrl || '';
+      // 能自动注册的显示按钮，否则提示需要手工填到对方后台。
+      const registerCtl = s.supportsWebhookAutoRegister
+        ? '<button class="btn btn-outline btn-sm" data-replenish-register="' + p + '">' + t('replenish.register') + '</button>'
+        : '<span class="text-sm muted-text">' + t('replenish.manualRegisterHint') + '</span>';
+      return '' +
+        '<div class="card replenish-supplier" data-replenish-provider="' + p + '">' +
+          '<div class="card-header">' +
+            '<span class="card-title">' + escapeHtml(replenishProviderLabel(s.provider)) + '</span>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label class="flex items-center gap-2">' +
+              '<span class="switch"><input type="checkbox" data-replenish-field="enabled"' + (s.enabled ? ' checked' : '') + ' /><span class="slider"></span></span>' +
+              '<span>' + t('replenish.supplierEnabled') + '</span>' +
+            '</label>' +
+            '<small>' + t('replenish.supplierEnabledHint') + '</small>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label>' + t('replenish.baseUrl') + '</label>' +
+            '<input type="text" data-replenish-field="baseUrl" value="' + escapeHtml(s.baseUrl || '') + '"' +
+              ' placeholder="' + escapeHtml(s.baseUrlHint || '') + '" autocomplete="off" />' +
+            '<small>' + t('replenish.baseUrlHint') + '</small>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label>' + t('replenish.apiKey') + '</label>' +
+            '<input type="password" data-replenish-field="apiKey" value=""' +
+              ' placeholder="' + escapeHtml(keyPlaceholder) + '" autocomplete="new-password" />' +
+            '<small>' + t('replenish.apiKeyHint') + '</small>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label>' + t('replenish.webhookCount') + '</label>' +
+            '<input type="number" min="0" data-replenish-field="webhookCount" value="' + (s.webhookCount || 0) + '" />' +
+            '<small>' + t('replenish.webhookCountHint') + '</small>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label>' + t('replenish.callbackUrl') + '</label>' +
+            '<div class="input-row">' +
+              '<input type="text" data-replenish-callback="' + p + '" value="' + escapeHtml(callback) + '" readonly />' +
+              '<button class="btn btn-outline btn-sm" data-replenish-copy="' + p + '">' + t('replenish.copy') + '</button>' +
+            '</div>' +
+            '<small>' + t('replenish.callbackUrlHint') + '</small>' +
+          '</div>' +
+          '<div class="flex gap-2 items-center">' + registerCtl +
+            '<button class="btn btn-outline btn-sm" data-replenish-reset="' + p + '">' + t('replenish.resetSecret') + '</button>' +
+          '</div>' +
+          '<div class="form-group mt-2">' +
+            '<label class="font-semibold">' + t('replenish.lastWebhookTitle') + '</label>' +
+            '<div class="text-sm muted-text">' + replenishWebhookLine(s) + '</div>' +
+          '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  // replenishWebhookLine 渲染单家的「上次收到推送」一行。
+  function replenishWebhookLine(s) {
+    if (!s.lastWebhookAt) return t('replenish.webhookNever');
+    const when = new Date(s.lastWebhookAt * 1000).toLocaleString();
+    let html = '<div>' + t('replenish.webhookLast') + ' ' + when + '</div>';
+    if (s.lastWebhookMsg) html += '<div>' + escapeHtml(s.lastWebhookMsg) + '</div>';
+    return html;
+  }
+
   function renderReplenishStatus(d) {
     const box = $('replenishLastRun');
     if (!box) return;
@@ -3046,10 +3131,12 @@
     }
     const when = new Date(d.lastRunAt * 1000).toLocaleString();
     let html = '<div class="replenish-status-line"><span class="muted-text">' + t('replenish.lastRun') + '</span> ' + when + '</div>';
+    if (d.lastResult) {
+      html += '<div class="replenish-status-line text-success"><i class="fa-solid fa-check"></i> ' + escapeHtml(d.lastResult) + '</div>';
+    }
+    // 两家并行时可能「一家成功一家失败」，因此结果与错误要同时展示。
     if (d.lastError) {
       html += '<div class="replenish-status-line text-danger"><i class="fa-solid fa-triangle-exclamation"></i> ' + escapeHtml(d.lastError) + '</div>';
-    } else if (d.lastResult) {
-      html += '<div class="replenish-status-line text-success"><i class="fa-solid fa-check"></i> ' + escapeHtml(d.lastResult) + '</div>';
     }
     box.innerHTML = html;
   }
@@ -3070,23 +3157,142 @@
     const num = id => { const el = $(id); if (!el) return 0; const v = parseInt((el.value || '').trim(), 10); return isNaN(v) ? 0 : v; };
     const str = id => { const el = $(id); return el ? (el.value || '').trim() : ''; };
     const chk = id => { const el = $(id); return el ? !!el.checked : false; };
-    // 供应商已全部移除，只提交策略字段；连接信息（provider/baseUrl/密钥）不再由
-    // 面板管理，后端保留字段等接入新供应商时复用。
-    return {
+    const payload = {
       region: str('replenishRegion'),
       enabled: chk('replenishEnabled'),
       minPoolSize: num('replenishMinPoolSize'),
       batchCount: num('replenishBatchCount'),
       intervalSeconds: num('replenishInterval'),
       allDeadReplenish: chk('replenishAllDead'),
-      allDeadCount: num('replenishAllDeadCount')
+      allDeadCount: num('replenishAllDeadCount'),
+      publicBaseUrl: str('replenishPublicBaseUrl'),
+      suppliers: {}
     };
+    // 逐家收集卡片里的字段。密钥留空表示保持不变，因此空值不提交该字段。
+    document.querySelectorAll('[data-replenish-provider]').forEach(card => {
+      const provider = card.getAttribute('data-replenish-provider');
+      const field = name => card.querySelector('[data-replenish-field="' + name + '"]');
+      const item = {};
+      const en = field('enabled');
+      if (en) item.enabled = !!en.checked;
+      const base = field('baseUrl');
+      if (base) item.baseUrl = (base.value || '').trim();
+      const cnt = field('webhookCount');
+      if (cnt) {
+        const v = parseInt((cnt.value || '').trim(), 10);
+        item.webhookCount = isNaN(v) ? 0 : v;
+      }
+      const key = field('apiKey');
+      const keyVal = key ? (key.value || '').trim() : '';
+      if (keyVal) item.apiKey = keyVal;
+      payload.suppliers[provider] = item;
+    });
+    return payload;
   }
   async function saveReplenish() {
     const res = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
     const d = await res.json();
     if (d.success) { toast(t('replenish.saved'), 'success'); loadReplenish(); }
     else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
+  }
+  // 逐家展示「测试连接」结果：一家挂了不影响另一家的提示，用户能分清是
+  // 两家都不通还是只有一家配错。
+  async function testReplenish() {
+    // 先保存，确保测试用的是面板上刚填的连接信息。
+    const saveRes = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
+    const saveData = await saveRes.json();
+    if (!saveData.success) { toast(t('common.saveFailed') + ': ' + (saveData.error || ''), 'error'); return; }
+    const btn = $('testReplenishBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api('/replenish/test', { method: 'POST' });
+      const d = await res.json();
+      if (d.error) { toastError(t('replenish.testFailed') + ': ' + d.error); return; }
+      (d.suppliers || []).forEach(s => {
+        const label = replenishProviderLabel(s.provider);
+        if (!s.ok) { toastError(label + ': ' + (s.error || t('replenish.testFailed'))); return; }
+        // 字段覆盖度按家不同：有余额的显示余额，有阶梯价的显示区间。
+        const parts = [];
+        if (s.name) parts.push(s.name);
+        if (s.remaining != null) parts.push(t('replenish.balance') + ' ' + formatNumber(s.remaining));
+        if (s.stock != null && s.stock >= 0) parts.push(t('replenish.stock') + ' ' + s.stock);
+        if (s.priceMin != null) {
+          parts.push(t('replenish.price') + ' ' + (s.priceMax != null
+            ? formatNumber(s.priceMin) + '~' + formatNumber(s.priceMax)
+            : formatNumber(s.priceMin)));
+        }
+        toastPrimary(label + ': ' + (parts.length ? parts.join(' / ') : t('replenish.testOkBare')),
+          { duration: 6000 });
+      });
+    } finally {
+      if (btn) btn.disabled = false;
+      loadReplenish();
+    }
+  }
+  // 手动补号：所有启用的供应商各买一批。逐家汇报，便于看清是谁失败了。
+  async function runReplenish() {
+    const raw = ($('replenishManualCount') || {}).value || '';
+    const count = parseInt(raw.trim(), 10);
+    const body = (!isNaN(count) && count > 0) ? JSON.stringify({ count }) : '{}';
+    const btn = $('runReplenishBtn');
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api('/replenish/run', { method: 'POST', body });
+      const d = await res.json();
+      if (d.error) { toastError(t('replenish.runFailed') + ': ' + d.error); return; }
+      toastPrimary(t('replenish.runOk', d.purchased || 0, d.imported || 0, d.skipped || 0), { duration: 6000 });
+      // 单家失败要单独提示：整体可能「部分成功」，只看汇总会漏掉这一点。
+      (d.suppliers || []).forEach(s => {
+        if (s.error) {
+          const label = replenishProviderLabel(s.provider);
+          toastError(label + ': ' + s.error);
+        }
+      });
+      loadStats(); loadAccounts();
+    } finally {
+      if (btn) btn.disabled = false;
+      loadReplenish();
+    }
+  }
+  // 把回调地址注册到指定供应商（仅支持注册接口的那家）。
+  async function registerReplenishWebhook(provider) {
+    const saveRes = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
+    const saveData = await saveRes.json();
+    if (!saveData.success) { toast(t('common.saveFailed') + ': ' + (saveData.error || ''), 'error'); return; }
+    try {
+      const res = await api('/replenish/register-webhook', {
+        method: 'POST', body: JSON.stringify({ provider })
+      });
+      const d = await res.json();
+      if (d.error) { toastError(t('replenish.registerFailed') + ': ' + d.error); return; }
+      (d.suppliers || []).forEach(s => {
+        const label = replenishProviderLabel(s.provider);
+        if (s.ok) toastPrimary(label + ': ' + t('replenish.registerOk'), { duration: 5000 });
+        else toastError(label + ': ' + (s.error || t('replenish.registerFailed')));
+      });
+    } finally {
+      loadReplenish();
+    }
+  }
+  // 重置某家的回调密钥：旧地址立即失效，需要重新注册/重新粘贴。
+  async function resetReplenishSecret(provider) {
+    if (!confirm(t('replenish.resetConfirm'))) return;
+    const res = await api('/replenish/reset-secret', {
+      method: 'POST', body: JSON.stringify({ provider })
+    });
+    const d = await res.json();
+    if (d.success) toastPrimary(t('replenish.resetOk'), { duration: 5000 });
+    else toastError(t('common.failed') + ': ' + (d.error || ''));
+    loadReplenish();
+  }
+  async function copyReplenishCallback(provider) {
+    const el = $('replenishCallbackUrl_' + provider);
+    const url = el ? (el.value || '').trim() : '';
+    if (!url) return toastWarning(t('replenish.callbackEmpty'));
+    try {
+      await navigator.clipboard.writeText(url);
+      toastPrimary(t('common.copied'));
+    } catch { toastError(t('common.failed')); }
   }
   async function importSsoToken() {
     const res = await api('/auth/sso-token', {
@@ -3704,6 +3910,27 @@
     if (save) save.addEventListener('click', saveReplenish);
     const savePolicy = $('saveReplenishPolicyBtn');
     if (savePolicy) savePolicy.addEventListener('click', saveReplenish);
+    const test = $('testReplenishBtn');
+    if (test) test.addEventListener('click', testReplenish);
+    const run = $('runReplenishBtn');
+    if (run) run.addEventListener('click', runReplenish);
+
+    // 供应商卡片是动态渲染的，用事件委托绑定各家的注册/重置/复制按钮，
+    // 避免每次重渲染后重新挂监听（也就不会重复挂）。
+    const box = $('replenishSuppliers');
+    if (box) {
+      box.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-replenish-register],button[data-replenish-reset],button[data-replenish-copy]');
+        if (!btn) return;
+        e.preventDefault();
+        const reg = btn.getAttribute('data-replenish-register');
+        if (reg) return registerReplenishWebhook(reg);
+        const reset = btn.getAttribute('data-replenish-reset');
+        if (reset) return resetReplenishSecret(reset);
+        const copy = btn.getAttribute('data-replenish-copy');
+        if (copy) return copyReplenishCallback(copy);
+      });
+    }
   }
 
   function bindPromptFilterEvents() {

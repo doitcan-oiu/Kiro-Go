@@ -590,21 +590,40 @@
 
       <!-- Replenish (补号) tab -->
       <div id="tabReplenish" class="tab-content hidden">
-        <!-- Supplier connection. All supplier clients were removed; the framework
-             (policy, polling loop, webhook endpoint, import path) is still here, so
-             wiring a new supplier only needs a replenishSupplier implementation. -->
+        <!-- Two suppliers run in parallel: each has its own credentials, its own
+             per-push purchase count and its own callback URL. Cards are rendered
+             from the /replenish payload by renderReplenishSuppliers(). -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.supplierTitle"></span></div>
-          <p class="text-sm muted-text" data-i18n="replenish.noProviders"></p>
+          <p class="text-sm muted-text mb-2" data-i18n="replenish.parallelIntro"></p>
+          <div id="replenishSuppliers"></div>
           <div class="form-group mt-3">
             <label data-i18n="replenish.region"></label>
             <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
             <small data-i18n="replenish.regionHint"></small>
           </div>
-          <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
+          <div class="flex gap-2">
+            <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
+            <button class="btn btn-outline" id="testReplenishBtn" data-i18n="replenish.test"></button>
+          </div>
+          <div id="replenishTestResult" class="text-sm mt-2"></div>
         </div>
 
-        <!-- Auto-replenish policy -->
+        <!-- Push-based replenish: one callback URL per supplier, so a leaked or
+             rotated secret only affects that one. -->
+        <div class="card">
+          <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
+          <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
+          <div class="form-group">
+            <label data-i18n="replenish.publicBaseUrl"></label>
+            <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
+            <small data-i18n="replenish.publicBaseUrlHint"></small>
+          </div>
+          <div id="replenishCallbacks"></div>
+          <button class="btn btn-primary mt-2" id="saveReplenishWebhookBtn" data-i18n="replenish.save"></button>
+        </div>
+
+        <!-- Auto-replenish policy (shared by both suppliers when polling) -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.autoTitle"></span></div>
           <div class="form-group">
@@ -650,12 +669,17 @@
           <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
         </div>
 
-        <!-- Last-run state. The manual trigger and the push-based (webhook) card were
-             removed along with the suppliers: with no supplier client there is
-             nothing to claim from, so only the historical state is shown. -->
+        <!-- Manual replenish: buys from every enabled supplier at once -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
           <div class="form-group">
+            <label data-i18n="replenish.manualCount"></label>
+            <input type="number" id="replenishManualCount" min="1" placeholder="5" />
+            <small data-i18n="replenish.manualCountHint"></small>
+          </div>
+          <button class="btn btn-primary" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
+          <div id="replenishRunResult" class="text-sm mt-2"></div>
+          <div class="form-group mt-3">
             <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
             <div id="replenishLastRun" class="text-sm muted-text"></div>
           </div>
