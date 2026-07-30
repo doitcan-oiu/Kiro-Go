@@ -516,3 +516,41 @@ func TestMigrateLegacyConfig(t *testing.T) {
 		t.Errorf("policy fields lost: enabled=%v batchCount=%d", rc.Enabled, rc.BatchCount)
 	}
 }
+
+// --- webhook 事件名归一化 ---
+
+// 各家事件命名不统一：kiross/kiroapp.io 用 new_keys_available，kiroapp.cc 实测推的是
+// "stock"。曾因白名单里没有 "stock" 而整条推送被拒、错过补号，这里锁住该行为。
+func TestClassifyWebhookEvent(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		event    string
+		want     webhookEventKind
+	}{
+		// 回归用例：kiroapp.cc 真实推送的事件名。
+		{"kiroappcc stock is a restock", config.ReplenishProviderKiroappcc, "stock", webhookEventNewKeys},
+		{"kiroappcc new_stock", config.ReplenishProviderKiroappcc, "new_stock", webhookEventNewKeys},
+		{"kiroappcc mixed case", config.ReplenishProviderKiroappcc, "  Stock  ", webhookEventNewKeys},
+		// 无幂等键的一家：文档没给事件名清单，未知事件按「到货」处理，宁可多买一次
+		// 也不要漏补。下单量取本地配置，不依赖载荷字段，所以这是安全的。
+		{"kiroappcc unknown falls back to restock", config.ReplenishProviderKiroappcc, "whatever", webhookEventNewKeys},
+		// 但探测类事件绝不能下单。
+		{"kiroappcc test stays a probe", config.ReplenishProviderKiroappcc, "test", webhookEventProbe},
+		{"kiroappcc ping stays a probe", config.ReplenishProviderKiroappcc, "ping", webhookEventProbe},
+
+		// 有幂等键的两家事件名有明确文档，保持严格匹配。
+		{"kiross documented event", config.ReplenishProviderKiross, "new_keys_available", webhookEventNewKeys},
+		{"kiross unknown is rejected", config.ReplenishProviderKiross, "stock_weird", webhookEventUnknown},
+		{"kiroappio unknown is rejected", config.ReplenishProviderKiroappio, "mystery", webhookEventUnknown},
+		{"kiroappio revoked", config.ReplenishProviderKiroappio, "key_revoked_abuse", webhookEventRevoked},
+		{"all dead", config.ReplenishProviderKiross, "all_keys_dead", webhookEventAllDead},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyWebhookEvent(tc.provider, tc.event); got != tc.want {
+				t.Errorf("classifyWebhookEvent(%q, %q) = %v, want %v", tc.provider, tc.event, got, tc.want)
+			}
+		})
+	}
+}

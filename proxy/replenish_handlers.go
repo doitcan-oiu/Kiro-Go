@@ -14,6 +14,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -434,10 +435,18 @@ func (h *Handler) handleReplenishWebhook(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// 限制请求体大小，供应商事件很小。
+	// 限制请求体大小，供应商事件很小。先读原始字节：各家载荷字段不尽相同，
+	// 遇到无法识别的事件时把原文记进日志，才能据实补映射而不是靠猜。
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "read body failed"})
+		return
+	}
 	var evt supplierWebhookEvent
-	if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+	if err := json.Unmarshal(raw, &evt); err != nil {
+		logger.Warnf("[Replenish] webhook from %s: invalid JSON: %s", provider, truncateForLog(raw, 512))
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON"})
 		return
@@ -448,7 +457,9 @@ func (h *Handler) handleReplenishWebhook(w http.ResponseWriter, r *http.Request,
 	now := time.Now().Unix()
 	if err != nil {
 		_ = config.RecordSupplierWebhook(provider, now, "error: "+err.Error())
-		logger.Warnf("[Replenish] webhook event %q from %s failed: %v", evt.Event, provider, err)
+		// 带上原始载荷：事件名不认识时，这是唯一能看出该家真实字段的线索。
+		logger.Warnf("[Replenish] webhook event %q from %s failed: %v | payload=%s",
+			evt.Event, provider, err, truncateForLog(raw, 512))
 		// 仍返回 200，避免供应商因我方内部错误无限重试；错误已记录到运行态。
 		json.NewEncoder(w).Encode(map[string]interface{}{"ok": false, "error": err.Error()})
 		return
@@ -456,4 +467,14 @@ func (h *Handler) handleReplenishWebhook(w http.ResponseWriter, r *http.Request,
 	_ = config.RecordSupplierWebhook(provider, now, msg)
 	logger.Infof("[Replenish] webhook event %q from %s: %s", evt.Event, provider, msg)
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "message": msg})
+}
+
+// truncateForLog 返回可安全写入日志的载荷摘要。
+// webhook 载荷不含密钥明文（各家文档均如此），但仍限长避免刷爆日志。
+func truncateForLog(b []byte, max int) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…(truncated)"
 }

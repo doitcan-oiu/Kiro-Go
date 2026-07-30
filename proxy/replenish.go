@@ -547,6 +547,58 @@ func (ev supplierWebhookEvent) idempotencyKey() string {
 	return strings.TrimSpace(ev.PurchaseOrderID)
 }
 
+// webhookEventKind 是各家事件名归一化后的类别。
+//
+// 各供应商的事件命名并不统一（kiross/kiroapp.io 用 new_keys_available，
+// kiroapp.cc 用 stock），语义却一致，因此先归一再分派，避免把分派逻辑写成
+// 一长串各家字面量的 case。
+type webhookEventKind int
+
+const (
+	webhookEventUnknown webhookEventKind = iota
+	webhookEventNewKeys                  // 有新 Key/库存可提取
+	webhookEventAllDead                  // 本轮 Key 全部失效
+	webhookEventRevoked                  // 上游吊销 Key
+	webhookEventProbe                    // 连通性测试
+)
+
+// classifyWebhookEvent 把供应商推送的事件名归一化为类别。
+//
+// 对没有幂等键的供应商（kiroapp.cc）采取「非探测即到货」：它的推送语义只有
+// 「有新库存」一种，文档也未列出事件名清单，若按白名单匹配就会像 "stock" 那样
+// 被拒而错过补号。这类家的下单量取本地配置，不依赖载荷字段，因此把未知事件当
+// 到货是安全的——最坏情况是按配置量买一次，而不是漏补。
+//
+// 反之，支持幂等的两家事件名有明确文档，保持严格匹配：未知事件宁可报错留痕，
+// 也不要拿一个语义不明的推送去下单。
+func classifyWebhookEvent(provider, event string) webhookEventKind {
+	switch strings.ToLower(strings.TrimSpace(event)) {
+	case "new_keys_available", "stock", "new_stock", "stock_available", "new_keys":
+		return webhookEventNewKeys
+	case "all_keys_dead":
+		return webhookEventAllDead
+	case "key_revoked_abuse":
+		return webhookEventRevoked
+	case "test", "webhook_test", "ping":
+		return webhookEventProbe
+	}
+	if !providerHasIdempotency(provider) {
+		return webhookEventNewKeys
+	}
+	return webhookEventUnknown
+}
+
+// providerHasIdempotency 报告该供应商的提取接口是否支持幂等订单号。
+// 决定了未知事件能否安全地当作「到货」处理，以及失败后能否重试。
+func providerHasIdempotency(provider string) bool {
+	switch config.NormalizeReplenishProvider(provider) {
+	case config.ReplenishProviderKiross, config.ReplenishProviderKiroappio:
+		return true
+	default:
+		return false
+	}
+}
+
 // handleProviderWebhookEvent 处理来自 provider 的一条 webhook 事件。
 //
 // provider 由回调路径确定（每家一个专属 secret），因此推送方是可信的、无需从载荷里猜。
@@ -563,8 +615,8 @@ func (ev supplierWebhookEvent) idempotencyKey() string {
 //
 // 返回人类可读摘要写入该家的运行态供面板展示。
 func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhookEvent) (string, error) {
-	switch ev.Event {
-	case "new_keys_available":
+	switch classifyWebhookEvent(provider, ev.Event) {
+	case webhookEventNewKeys:
 		rc := config.GetReplenishConfig()
 		sc := rc.Supplier(provider)
 		// 该家被停用：不下单。回调地址可能还留在供应商后台，停用就该真的不再花钱。
@@ -613,12 +665,12 @@ func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhook
 		logger.Infof("[Replenish] %s", summary)
 		return summary, nil
 
-	case "all_keys_dead":
+	case webhookEventAllDead:
 		summary := fmt.Sprintf("webhook all_keys_dead (%s): %d 个 Key 已失效", provider, ev.Dead)
 		logger.Warnf("[Replenish] %s", summary)
 		return summary, nil
 
-	case "key_revoked_abuse":
+	case webhookEventRevoked:
 		// 上游因滥用吊销了 Key，只记录告警；本地失效由请求侧的封禁检测处理。
 		summary := fmt.Sprintf("webhook key_revoked_abuse (%s): 上游已吊销 Key（疑似滥用）", provider)
 		if m := strings.TrimSpace(ev.Message); m != "" {
@@ -627,7 +679,7 @@ func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhook
 		logger.Warnf("[Replenish] %s", summary)
 		return summary, nil
 
-	case "test", "webhook_test", "ping":
+	case webhookEventProbe:
 		// 供应商「测试推送」按钮发来的连通性探测，不触发购买，仅确认收到。
 		summary := fmt.Sprintf("webhook 连通性测试成功（%s）", provider)
 		if strings.TrimSpace(ev.Message) != "" {
@@ -637,6 +689,7 @@ func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhook
 		return summary, nil
 
 	default:
-		return "", fmt.Errorf("unsupported webhook event %q", ev.Event)
+		// 记下原始事件名，便于对接新供应商时按实际载荷补映射，而不是靠猜。
+		return "", fmt.Errorf("unsupported webhook event %q from %s", ev.Event, provider)
 	}
 }
