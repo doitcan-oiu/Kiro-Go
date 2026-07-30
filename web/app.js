@@ -3047,7 +3047,12 @@
   const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io' };
   function replenishProviderLabel(p) { return REPLENISH_PROVIDER_LABELS[p] || p; }
 
-  // renderReplenishSuppliers 为每家供应商渲染一张配置卡片。
+  // renderReplenishSuppliers 为每家供应商渲染一张紧凑配置卡片。
+  //
+  // 布局要点（两家并排、整页不拉长）：
+  //   - 字段说明放 title 悬浮提示，不占纵向空间。
+  //   - 开关与「每次推送买几个」同一行；地址/密钥各占一行。
+  //   - 回调地址与其操作按钮同一行；无自动注册接口的用一个小徽标说明需手填。
   // 密钥输入框始终留空：有值时用掩码作占位，空提交表示保持原密钥不变。
   function renderReplenishSuppliers(list) {
     const box = $('replenishSuppliers');
@@ -3058,56 +3063,42 @@
     }
     box.innerHTML = list.map(s => {
       const p = escapeHtml(s.provider);
-      const keyPlaceholder = s.hasApiKey ? (s.apiKeyMasked || '••••••') : t('replenish.apiKeyPlaceholder');
-      // 回调地址：已生成密钥且配了公网地址才有值。
+      const keyPlaceholder = s.hasApiKey ? (s.apiKeyMasked || '\u2022\u2022\u2022\u2022\u2022\u2022') : t('replenish.apiKeyPlaceholder');
       const callback = s.callbackUrl || '';
-      // 能自动注册的显示按钮，否则提示需要手工填到对方后台。
+      // 能自动注册的给按钮；否则用徽标说明要手工填到对方后台（hover 看详情）。
       const registerCtl = s.supportsWebhookAutoRegister
         ? '<button class="btn btn-outline btn-sm" data-replenish-register="' + p + '">' + t('replenish.register') + '</button>'
-        : '<span class="text-sm muted-text">' + t('replenish.manualRegisterHint') + '</span>';
+        : '<span class="replenish-badge" title="' + escapeAttr(t('replenish.manualRegisterHint')) + '">' + t('replenish.manualBadge') + '</span>';
       return '' +
-        '<div class="card replenish-supplier" data-replenish-provider="' + p + '">' +
-          '<div class="card-header">' +
-            '<span class="card-title">' + escapeHtml(replenishProviderLabel(s.provider)) + '</span>' +
-          '</div>' +
-          '<div class="form-group">' +
-            '<label class="flex items-center gap-2">' +
+        '<div class="replenish-supplier' + (s.enabled ? '' : ' is-off') + '" data-replenish-provider="' + p + '">' +
+          '<div class="replenish-supplier-head">' +
+            '<label class="replenish-supplier-toggle">' +
               '<span class="switch"><input type="checkbox" data-replenish-field="enabled"' + (s.enabled ? ' checked' : '') + ' /><span class="slider"></span></span>' +
-              '<span>' + t('replenish.supplierEnabled') + '</span>' +
+              '<span class="replenish-supplier-name">' + escapeHtml(replenishProviderLabel(s.provider)) + '</span>' +
             '</label>' +
-            '<small>' + t('replenish.supplierEnabledHint') + '</small>' +
+            '<span class="replenish-supplier-count replenish-hint" title="' + escapeAttr(t('replenish.webhookCountHint')) + '">' +
+              '<span>' + t('replenish.webhookCountShort') + '</span>' +
+              '<input type="number" min="0" data-replenish-field="webhookCount" value="' + (s.webhookCount || 0) + '" />' +
+            '</span>' +
           '</div>' +
-          '<div class="form-group">' +
-            '<label>' + t('replenish.baseUrl') + '</label>' +
-            '<input type="text" data-replenish-field="baseUrl" value="' + escapeHtml(s.baseUrl || '') + '"' +
-              ' placeholder="' + escapeHtml(s.baseUrlHint || '') + '" autocomplete="off" />' +
-            '<small>' + t('replenish.baseUrlHint') + '</small>' +
-          '</div>' +
-          '<div class="form-group">' +
-            '<label>' + t('replenish.apiKey') + '</label>' +
+          '<div class="replenish-supplier-body">' +
+            '<input type="text" data-replenish-field="baseUrl" value="' + escapeAttr(s.baseUrl || '') + '"' +
+              ' placeholder="' + escapeAttr(s.baseUrlHint || t('replenish.baseUrl')) + '"' +
+              ' title="' + escapeAttr(t('replenish.baseUrlHint')) + '" autocomplete="off" />' +
             '<input type="password" data-replenish-field="apiKey" value=""' +
-              ' placeholder="' + escapeHtml(keyPlaceholder) + '" autocomplete="new-password" />' +
-            '<small>' + t('replenish.apiKeyHint') + '</small>' +
-          '</div>' +
-          '<div class="form-group">' +
-            '<label>' + t('replenish.webhookCount') + '</label>' +
-            '<input type="number" min="0" data-replenish-field="webhookCount" value="' + (s.webhookCount || 0) + '" />' +
-            '<small>' + t('replenish.webhookCountHint') + '</small>' +
-          '</div>' +
-          '<div class="form-group">' +
-            '<label>' + t('replenish.callbackUrl') + '</label>' +
-            '<div class="input-row">' +
-              '<input type="text" data-replenish-callback="' + p + '" value="' + escapeHtml(callback) + '" readonly />' +
-              '<button class="btn btn-outline btn-sm" data-replenish-copy="' + p + '">' + t('replenish.copy') + '</button>' +
+              ' placeholder="' + escapeAttr(keyPlaceholder) + '"' +
+              ' title="' + escapeAttr(t('replenish.apiKeyHint')) + '" autocomplete="new-password" />' +
+            '<div class="replenish-callback-row">' +
+              '<input type="text" data-replenish-callback="' + p + '" value="' + escapeAttr(callback) + '"' +
+                ' placeholder="' + escapeAttr(t('replenish.callbackEmptyShort')) + '"' +
+                ' title="' + escapeAttr(t('replenish.callbackUrlHint')) + '" readonly />' +
+              '<button class="btn btn-outline btn-sm" data-replenish-copy="' + p + '" title="' + escapeAttr(t('replenish.copy')) + '">' +
+                '<i class="fa-regular fa-copy"></i></button>' +
+              registerCtl +
+              '<button class="btn btn-outline btn-sm" data-replenish-reset="' + p + '" title="' + escapeAttr(t('replenish.resetSecret')) + '">' +
+                '<i class="fa-solid fa-rotate"></i></button>' +
             '</div>' +
-            '<small>' + t('replenish.callbackUrlHint') + '</small>' +
-          '</div>' +
-          '<div class="flex gap-2 items-center">' + registerCtl +
-            '<button class="btn btn-outline btn-sm" data-replenish-reset="' + p + '">' + t('replenish.resetSecret') + '</button>' +
-          '</div>' +
-          '<div class="form-group mt-2">' +
-            '<label class="font-semibold">' + t('replenish.lastWebhookTitle') + '</label>' +
-            '<div class="text-sm muted-text">' + replenishWebhookLine(s) + '</div>' +
+            '<div class="replenish-supplier-foot text-sm muted-text">' + replenishWebhookLine(s) + '</div>' +
           '</div>' +
         '</div>';
     }).join('');

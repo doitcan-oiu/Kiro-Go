@@ -592,97 +592,90 @@
       <div id="tabReplenish" class="tab-content hidden">
         <!-- Two suppliers run in parallel: each has its own credentials, its own
              per-push purchase count and its own callback URL. Cards are rendered
-             from the /replenish payload by renderReplenishSuppliers(). -->
+             from the /replenish payload by renderReplenishSuppliers().
+             Field help text lives in title tooltips (.replenish-hint) to keep the
+             tab short; see the replenish section in styles.css. -->
         <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="replenish.supplierTitle"></span></div>
+          <div class="card-header">
+            <span class="card-title" data-i18n="replenish.supplierTitle"></span>
+            <div class="replenish-actions">
+              <button class="btn btn-outline btn-sm" id="testReplenishBtn" data-i18n="replenish.test"></button>
+              <button class="btn btn-primary btn-sm" id="saveReplenishBtn" data-i18n="replenish.save"></button>
+            </div>
+          </div>
           <p class="text-sm muted-text mb-2" data-i18n="replenish.parallelIntro"></p>
-          <div id="replenishSuppliers"></div>
-          <div class="form-group mt-3">
-            <label data-i18n="replenish.region"></label>
-            <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
-            <small data-i18n="replenish.regionHint"></small>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
-            <button class="btn btn-outline" id="testReplenishBtn" data-i18n="replenish.test"></button>
-          </div>
+          <div id="replenishSuppliers" class="replenish-suppliers"></div>
           <div id="replenishTestResult" class="text-sm mt-2"></div>
-        </div>
 
-        <!-- Push-based replenish: one callback URL per supplier, so a leaked or
-             rotated secret only affects that one. -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
-          <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
-          <div class="form-group">
-            <label data-i18n="replenish.publicBaseUrl"></label>
-            <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
-            <small data-i18n="replenish.publicBaseUrlHint"></small>
+          <!-- Public base URL is shared by both suppliers: only the path differs. -->
+          <div class="replenish-grid mt-3">
+            <div class="form-group span-2">
+              <label class="replenish-hint" data-i18n="replenish.publicBaseUrl" data-i18n-title="replenish.publicBaseUrlHint"></label>
+              <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.region" data-i18n-title="replenish.regionHint"></label>
+              <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
+            </div>
           </div>
-          <div id="replenishCallbacks"></div>
-          <button class="btn btn-primary mt-2" id="saveReplenishWebhookBtn" data-i18n="replenish.save"></button>
         </div>
 
         <!-- Auto-replenish policy (shared by both suppliers when polling) -->
         <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="replenish.autoTitle"></span></div>
-          <div class="form-group">
-            <label class="flex items-center gap-2">
-              <span class="switch"><input type="checkbox" id="replenishEnabled" /><span class="slider"></span></span>
-              <span data-i18n="replenish.enabled"></span>
-            </label>
-            <small data-i18n="replenish.enabledHint"></small>
+          <div class="card-header">
+            <span class="card-title" data-i18n="replenish.autoTitle"></span>
+            <button class="btn btn-primary btn-sm" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
           </div>
-          <div class="form-group">
-            <label data-i18n="replenish.minPoolSize"></label>
-            <input type="number" id="replenishMinPoolSize" min="0" placeholder="3" />
-            <small data-i18n="replenish.minPoolSizeHint"></small>
+          <div class="replenish-grid">
+            <div class="form-group">
+              <label class="flex items-center gap-2">
+                <span class="switch"><input type="checkbox" id="replenishEnabled" /><span class="slider"></span></span>
+                <span class="replenish-hint" data-i18n="replenish.enabled" data-i18n-title="replenish.enabledHint"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="flex items-center gap-2">
+                <span class="switch"><input type="checkbox" id="replenishAllDead" /><span class="slider"></span></span>
+                <span class="replenish-hint" data-i18n="replenish.allDead" data-i18n-title="replenish.allDeadHint"></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.minPoolSize" data-i18n-title="replenish.minPoolSizeHint"></label>
+              <input type="number" id="replenishMinPoolSize" min="0" placeholder="3" />
+            </div>
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.batchCount" data-i18n-title="replenish.batchCountHint"></label>
+              <input type="number" id="replenishBatchCount" min="1" placeholder="5" />
+            </div>
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.interval" data-i18n-title="replenish.intervalHint"></label>
+              <input type="number" id="replenishInterval" min="60" placeholder="300" />
+            </div>
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.allDeadCount" data-i18n-title="replenish.allDeadCountHint"></label>
+              <input type="number" id="replenishAllDeadCount" min="0" placeholder="0" />
+            </div>
           </div>
-          <div class="form-group">
-            <label data-i18n="replenish.batchCount"></label>
-            <input type="number" id="replenishBatchCount" min="1" placeholder="5" />
-            <small data-i18n="replenish.batchCountHint"></small>
-          </div>
-          <div class="form-group">
-            <label data-i18n="replenish.interval"></label>
-            <input type="number" id="replenishInterval" min="60" placeholder="300" />
-            <small data-i18n="replenish.intervalHint"></small>
-          </div>
-
-          <div class="form-group">
-            <label class="flex items-center gap-2">
-              <span class="switch"><input type="checkbox" id="replenishAllDead" /><span class="slider"></span></span>
-              <span data-i18n="replenish.allDead"></span>
-            </label>
-            <small data-i18n="replenish.allDeadHint"></small>
-          </div>
-          <div class="form-group">
-            <label data-i18n="replenish.allDeadCount"></label>
-            <input type="number" id="replenishAllDeadCount" min="0" placeholder="0" />
-            <small data-i18n="replenish.allDeadCountHint"></small>
-          </div>
-          <div class="form-group">
-            <label class="font-semibold" data-i18n="replenish.credentialsTitle"></label>
-            <div id="replenishCredentials" class="text-sm muted-text"></div>
-          </div>
-
-          <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
+          <div id="replenishCredentials" class="text-sm muted-text mt-2"></div>
         </div>
 
         <!-- Manual replenish: buys from every enabled supplier at once -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
-          <div class="form-group">
-            <label data-i18n="replenish.manualCount"></label>
-            <input type="number" id="replenishManualCount" min="1" placeholder="5" />
-            <small data-i18n="replenish.manualCountHint"></small>
+          <div class="replenish-grid">
+            <div class="form-group">
+              <label class="replenish-hint" data-i18n="replenish.manualCount" data-i18n-title="replenish.manualCountHint"></label>
+              <div class="replenish-actions">
+                <input type="number" id="replenishManualCount" min="1" placeholder="5" />
+                <button class="btn btn-primary btn-sm" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
+              <div id="replenishLastRun" class="text-sm muted-text"></div>
+            </div>
           </div>
-          <button class="btn btn-primary" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
           <div id="replenishRunResult" class="text-sm mt-2"></div>
-          <div class="form-group mt-3">
-            <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
-            <div id="replenishLastRun" class="text-sm muted-text"></div>
-          </div>
         </div>
       </div>
 
