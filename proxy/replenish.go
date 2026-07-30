@@ -99,6 +99,8 @@ func newReplenishSupplier(provider string, sc config.SupplierConfig) (replenishS
 		return newKirossClient(sc)
 	case config.ReplenishProviderKiroappio:
 		return newKiroappioClient(sc)
+	case config.ReplenishProviderKiroappcc:
+		return newKiroappccClient(sc)
 	default:
 		return nil, fmt.Errorf("unknown replenish provider %q", provider)
 	}
@@ -531,8 +533,10 @@ type supplierWebhookEvent struct {
 	ClientOrderID string `json:"client_order_id"`
 	OrderID       string `json:"order_id"`
 	Message       string `json:"message"`
-	NewKeys       int    `json:"new_keys"`
-	Dead          int    `json:"dead"`
+	// NewKeys 是本批可提取数量。用指针以区分「字段缺失」与「显式 0」：
+	// kiroapp.cc 的推送不含该字段，缺失时按配置量下单；显式 0 表示本批无 Key。
+	NewKeys *int `json:"new_keys"`
+	Dead    int  `json:"dead"`
 }
 
 // idempotencyKey 返回本次推送的幂等键，兼容两家供应商的字段名。
@@ -561,12 +565,6 @@ func (ev supplierWebhookEvent) idempotencyKey() string {
 func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhookEvent) (string, error) {
 	switch ev.Event {
 	case "new_keys_available":
-		available := ev.NewKeys
-		if available <= 0 {
-			// 文档明确 new_keys 为 0 时不要调取号接口。
-			return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", available)
-		}
-
 		rc := config.GetReplenishConfig()
 		sc := rc.Supplier(provider)
 		// 该家被停用：不下单。回调地址可能还留在供应商后台，停用就该真的不再花钱。
@@ -576,16 +574,25 @@ func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhook
 			return summary, nil
 		}
 
-		// 按该家配置的数量下单，并用 new_keys 夹取——它是本批次可提取上限，
-		// 超量请求必然失败。
+		// 下单量取该家自己配置的数量（各家可配不同值）。
 		count := rc.EffectiveWebhookCount(provider)
 		if count <= 0 {
 			return "", fmt.Errorf("provider %s has no webhook purchase count configured", provider)
 		}
-		if count > available {
-			logger.Infof("[Replenish] provider=%s webhookCount=%d clamped to new_keys=%d",
-				provider, count, available)
-			count = available
+
+		// new_keys 是可选字段：带了就当作本批可提取上限并据此夹取（超量请求必然失败）；
+		// 没带（kiroapp.cc 只通知「有货了」，不报数量）就按配置量直接下单。
+		// 显式的 0 视为「本批没有 Key」，按各家文档都不应再调取号接口。
+		if ev.NewKeys != nil {
+			available := *ev.NewKeys
+			if available <= 0 {
+				return "", fmt.Errorf("new_keys_available with non-positive new_keys=%d", available)
+			}
+			if count > available {
+				logger.Infof("[Replenish] provider=%s webhookCount=%d clamped to new_keys=%d",
+					provider, count, available)
+				count = available
+			}
 		}
 
 		req := supplierClaimRequest{

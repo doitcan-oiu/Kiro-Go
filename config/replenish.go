@@ -40,14 +40,20 @@ const (
 	// ReplenishProviderKiroappio 是 kiroapp.io：Bearer km_ 令牌，/api/me/* 前台接口，
 	// purchase 必填 client_order_id（幂等），支持 webhook 但无注册接口。
 	ReplenishProviderKiroappio = "kiroappio"
+	// ReplenishProviderKiroappcc 是 kiroapp.cc：Bearer 令牌，/openapi/* 接口，
+	// claim 无幂等键（重试会重复扣积分），支持 webhook 但地址在其站点后台手填。
+	ReplenishProviderKiroappcc = "kiroappcc"
 )
 
 // DefaultKiroappioBaseURL 是 kiroapp.io 的默认 API 基地址；用户只需填令牌。
 const DefaultKiroappioBaseURL = "http://kiroapp.io"
 
+// DefaultKiroappccBaseURL 是 kiroapp.cc 的默认 API 基地址；用户只需填令牌。
+const DefaultKiroappccBaseURL = "https://kiroapp.cc"
+
 // ReplenishProviders 是全部已对接的供应商标识，顺序即面板展示与补号遍历顺序。
 func ReplenishProviders() []string {
-	return []string{ReplenishProviderKiross, ReplenishProviderKiroappio}
+	return []string{ReplenishProviderKiross, ReplenishProviderKiroappio, ReplenishProviderKiroappcc}
 }
 
 // NormalizeReplenishProvider 把任意输入归一化为已知的供应商标识。
@@ -59,6 +65,9 @@ func NormalizeReplenishProvider(p string) string {
 		return ReplenishProviderKiross
 	case ReplenishProviderKiroappio, "kiroapp.io":
 		return ReplenishProviderKiroappio
+	case ReplenishProviderKiroappcc, "kiroapp.cc", "kiroapp":
+		// "kiroapp" 是这家在更早版本里的标识，保留以兼容升级。
+		return ReplenishProviderKiroappcc
 	default:
 		return ""
 	}
@@ -152,26 +161,27 @@ func (rc ReplenishConfig) EnabledProviders() []string {
 	return out
 }
 
+// defaultSupplierBaseURLs 是各家的官方默认地址（单一数据源）。
+// 不在表里的（kiross）没有公开的固定地址，必须由用户填写。
+var defaultSupplierBaseURLs = map[string]string{
+	ReplenishProviderKiroappio: DefaultKiroappioBaseURL,
+	ReplenishProviderKiroappcc: DefaultKiroappccBaseURL,
+}
+
 // SupplierBaseURL 返回该供应商生效的 API 基地址（已去除末尾斜杠）。
-// 留空时回落到官方默认地址；kiross 无默认地址，必须由用户填写。
+// 留空时回落到官方默认地址；没有默认地址的家返回空串，由客户端构造时报错。
 func (rc ReplenishConfig) SupplierBaseURL(provider string) string {
 	p := NormalizeReplenishProvider(provider)
 	if b := strings.TrimRight(strings.TrimSpace(rc.Supplier(p).BaseURL), "/"); b != "" {
 		return b
 	}
-	if p == ReplenishProviderKiroappio {
-		return DefaultKiroappioBaseURL
-	}
-	return ""
+	return defaultSupplierBaseURLs[p]
 }
 
 // DefaultSupplierBaseURL 返回该供应商的官方默认地址，供面板作输入框提示。
 // 空串表示该家没有默认地址，必须由用户填写。
 func DefaultSupplierBaseURL(provider string) string {
-	if NormalizeReplenishProvider(provider) == ReplenishProviderKiroappio {
-		return DefaultKiroappioBaseURL
-	}
-	return ""
+	return defaultSupplierBaseURLs[NormalizeReplenishProvider(provider)]
 }
 
 // SupportsWebhookAutoRegister 报告该供应商能否通过 API 自动注册回调地址。

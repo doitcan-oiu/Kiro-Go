@@ -1,0 +1,44 @@
+到货通知（Webhook）
+有新库存时主动推一条 JSON 到你的地址，不用一直轮询。一车产出多少 Key 只发一条。
+
+https://your-server.com/hook
+保存
+
+启用推送
+不想配 Webhook？也可以用脚本轮询库存
+# 每 30 秒查一次库存，有货就提取
+while true; do
+  n=$(curl -s https://kiroapp.cc/openapi/stock \
+    -H "Authorization: Bearer <你的API Key>" \
+    | grep -o '"availableKeys":[0-9]*' | cut -d: -f2)
+  if [ "${n:-0}" -gt 0 ]; then
+    echo "有货 $n 个，开始提取"
+    curl -s -X POST https://kiroapp.cc/openapi/claim \
+      -H "Authorization: Bearer <你的API Key>"
+    break
+  fi
+  sleep 30
+done
+复制脚本
+注意轮询也受频率限制，别把间隔设得太小
+调用频率限制
+•
+每 60 秒最多调用 60 次开放 API
+•
+超出后进入冷却，180 秒内所有请求都会返回 429 Too Many Requests
+•
+限制按账号统计，创建多个 API Key 也共用同一份额度
+•
+被限流时响应头会带 Retry-After（剩余秒数）， 建议程序据此自动退避重试
+网页端的提取、兑换等操作不受此限制，仅程序化调用 /openapi/* 时生效。
+开放 API 用法
+提取 1 个 Key（只返回 {key}）
+curl -X POST "https://kiroapp.cc/openapi/claim" -H "Authorization: Bearer <你的API Key>"
+批量提取 N 个 Key（只返回 {keys:[...]}）
+curl -X POST "<url>" -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "{\"count\":2}"
+查询可用库存（返回 {availableKeys, keyPrice}）
+curl "https://kiroapp.cc/openapi/stock" -H "Authorization: Bearer <你的API Key>"
+查询剩余积分（返回 {balance}）
+curl "https://kiroapp.cc/openapi/balance" -H "Authorization: Bearer <你的API Key>"
+车主提示：如果你投放了 AWS 凭证发车，/openapi/claim 会优先返回你自己产出的 Key 并且不扣积分（返回值里 pointsCost 为 0）。不需要单独的自取接口。
+错误响应统一为 { "error": { "type", "message" } }； 触发限流时 type 为 rate_limit_exceeded， 并附 retryAfter（秒）。

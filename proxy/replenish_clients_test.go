@@ -437,3 +437,169 @@ func TestClaimRejectsNonPositiveCount(t *testing.T) {
 		t.Error("kiroappio: expected error for count=0")
 	}
 }
+
+// --- kiroapp.cc 客户端 ---
+//
+// 与另两家的关键差异，也是这些用例要钉住的点：
+//   1. 错误信封是嵌套的 {"error":{"type","message"}}，不是平坦的 {"error":"..."}。
+//   2. claim 无幂等键，重试会重复扣费，因此调用方绝不能自动重试。
+//   3. 单个提取返回 {"key":...}，批量返回 {"keys":[...]}，两种形态都要认。
+
+func TestKiroappccClaimSingleAndBatch(t *testing.T) {
+	initTestConfig(t)
+
+	var gotAuth, gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi/balance" {
+			json.NewEncoder(w).Encode(map[string]float64{"balance": 12})
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		gotBody = nil
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		if gotBody != nil && gotBody["count"] != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"keys": []string{"ksk_a", " ", "ksk_b"}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"key": "ksk_one"})
+	}))
+	defer srv.Close()
+
+	c, err := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k-1"})
+	if err != nil {
+		t.Fatalf("newKiroappccClient: %v", err)
+	}
+
+	// 单个提取：不带请求体。
+	claim, err := c.Claim(supplierClaimRequest{Count: 1})
+	if err != nil {
+		t.Fatalf("Claim(1): %v", err)
+	}
+	if gotAuth != "Bearer k-1" {
+		t.Errorf("Authorization = %q, want Bearer k-1", gotAuth)
+	}
+	if gotPath != "/openapi/claim" {
+		t.Errorf("path = %q, want /openapi/claim", gotPath)
+	}
+	if len(claim.Keys) != 1 || claim.Keys[0] != "ksk_one" {
+		t.Errorf("Keys = %v, want [ksk_one]", claim.Keys)
+	}
+	// 无幂等键的供应商不应伪造订单号，否则面板会显示一个没有意义的值。
+	if claim.OrderID != "" {
+		t.Errorf("OrderID = %q, want empty (kiroapp.cc has no idempotency key)", claim.OrderID)
+	}
+
+	// 批量提取：带 {"count":N}，且空白项要被丢掉。
+	claim2, err := c.Claim(supplierClaimRequest{Count: 2})
+	if err != nil {
+		t.Fatalf("Claim(2): %v", err)
+	}
+	if got, ok := gotBody["count"].(float64); !ok || int(got) != 2 {
+		t.Errorf("body count = %v, want 2", gotBody["count"])
+	}
+	if len(claim2.Keys) != 2 || claim2.Keys[0] != "ksk_a" || claim2.Keys[1] != "ksk_b" {
+		t.Errorf("Keys = %v, want [ksk_a ksk_b]", claim2.Keys)
+	}
+}
+
+func TestKiroappccNestedErrorSurfacesMessage(t *testing.T) {
+	initTestConfig(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "180")
+		w.WriteHeader(http.StatusTooManyRequests)
+		// 该家独有的嵌套信封。
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"type": "rate_limit_exceeded", "message": "too many requests", "retryAfter": 180,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k-1"})
+	_, err := c.Stock()
+	if err == nil {
+		t.Fatal("expected an error on HTTP 429")
+	}
+	// 上游原因必须透传，否则面板只显示裸状态码，用户无法判断是限流还是密钥错。
+	if !strings.Contains(err.Error(), "too many requests") {
+		t.Errorf("error %q should carry the upstream message", err)
+	}
+	// 限流是可恢复的，退避秒数要能看到。
+	if !strings.Contains(err.Error(), "180") {
+		t.Errorf("error %q should carry retryAfter for backoff", err)
+	}
+}
+
+func TestKiroappccStockAndAccount(t *testing.T) {
+	initTestConfig(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/stock":
+			json.NewEncoder(w).Encode(map[string]interface{}{"availableKeys": 7, "keyPrice": 1.5})
+		case "/openapi/balance":
+			json.NewEncoder(w).Encode(map[string]float64{"balance": 99})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k-1"})
+
+	stock, err := c.Stock()
+	if err != nil {
+		t.Fatalf("Stock: %v", err)
+	}
+	if stock != 7 {
+		t.Errorf("Stock() = %d, want 7", stock)
+	}
+
+	acc, err := c.Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if acc.Remaining != 99 {
+		t.Errorf("Remaining = %v, want 99", acc.Remaining)
+	}
+	if !acc.HasPrice || acc.KeyPrice != 1.5 {
+		t.Errorf("KeyPrice = %v (has=%v), want 1.5", acc.KeyPrice, acc.HasPrice)
+	}
+	// 该家不提供配额，不应假装有。
+	if acc.HasQuota {
+		t.Error("HasQuota = true, want false for kiroapp.cc")
+	}
+}
+
+func TestKiroappccDefaultBaseURL(t *testing.T) {
+	c, err := newKiroappccClient(config.SupplierConfig{ApiKey: "k-1"})
+	if err != nil {
+		t.Fatalf("newKiroappccClient: %v", err)
+	}
+	if c.baseURL != config.DefaultKiroappccBaseURL {
+		t.Errorf("baseURL = %q, want %q", c.baseURL, config.DefaultKiroappccBaseURL)
+	}
+	// 末尾斜杠要去掉，避免拼出 //openapi/claim。
+	c2, _ := newKiroappccClient(config.SupplierConfig{BaseURL: "https://mirror.example.com/", ApiKey: "k-1"})
+	if c2.baseURL != "https://mirror.example.com" {
+		t.Errorf("baseURL = %q, want trailing slash trimmed", c2.baseURL)
+	}
+}
+
+func TestKiroappccNoKeysIsError(t *testing.T) {
+	initTestConfig(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{"keys": []string{}})
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k-1"})
+	// 出 0 个 Key 必须报错，否则会被当成一次成功的空补号而不被察觉。
+	if _, err := c.Claim(supplierClaimRequest{Count: 3}); err == nil {
+		t.Fatal("expected an error when claim returns no keys")
+	}
+}

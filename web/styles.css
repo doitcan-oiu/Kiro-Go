@@ -4403,8 +4403,9 @@ img.brand-icon {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
 }
+/* Read-only fields must still differ from the panel behind them. */
 .rp-input:read-only {
-  background: var(--muted);
+  background: var(--rp-panel-head, var(--muted));
   color: var(--muted-foreground);
 }
 .rp-input-num {
@@ -4418,10 +4419,30 @@ img.brand-icon {
 
 /* ---------- supplier panel ---------- */
 
+/* Panel surfaces.
+   The theme's surface tokens (--card #ffffff, --muted #f5f5f5, --secondary #ebebeb)
+   all sit within ~1.1:1 of each other, so stepping between them cannot read as a
+   separate box — the previous version painted the panel with --card, identical to
+   the parent card. These local tokens give the nesting a real step plus a clearly
+   visible outline, and are redefined for dark mode below. */
+.rp-suppliers {
+  --rp-panel: #eef1f6;
+  --rp-panel-head: #dfe4ec;
+  --rp-panel-line: #b3bbc7;
+  --rp-panel-line-soft: #c9d0da;
+}
+.dark .rp-suppliers,
+[data-theme="dark"] .rp-suppliers {
+  --rp-panel: #1b1d21;
+  --rp-panel-head: #262930;
+  --rp-panel-line: #474b53;
+  --rp-panel-line-soft: #33373e;
+}
+
 .rp-supplier {
-  border: 1px solid var(--border);
+  border: 1px solid var(--rp-panel-line);
   border-radius: var(--radius);
-  background: var(--card, var(--background));
+  background: var(--rp-panel);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -4438,8 +4459,8 @@ img.brand-icon {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem 0.875rem;
-  background: var(--muted);
-  border-bottom: 1px solid var(--border);
+  background: var(--rp-panel-head);
+  border-bottom: 1px solid var(--rp-panel-line-soft);
 }
 .rp-supplier-id {
   display: flex;
@@ -4480,6 +4501,16 @@ img.brand-icon {
   border-color: #065f46;
 }
 
+/* Editable fields keep the plain background so they clearly read as inputs
+   against the tinted panel. */
+.rp-supplier .rp-input:not(:read-only) {
+  background: var(--background);
+  border-color: var(--rp-panel-line-soft);
+}
+.rp-supplier .rp-input:not(:read-only):focus {
+  border-color: var(--primary);
+}
+
 .rp-supplier-body {
   padding: 0.875rem;
   display: flex;
@@ -4491,7 +4522,7 @@ img.brand-icon {
   font-size: 0.6875rem;
   line-height: 1.6;
   color: var(--muted-foreground);
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed var(--rp-panel-line-soft);
   word-break: break-word;
 }
 

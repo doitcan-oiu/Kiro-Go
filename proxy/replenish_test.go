@@ -74,6 +74,25 @@ func TestNewReplenishSupplierSelectsByProvider(t *testing.T) {
 			wantErr:  true,
 		},
 		{
+			name:     "kiroappcc",
+			provider: "kiroappcc",
+			sc:       config.SupplierConfig{ApiKey: "cc_1"},
+			wantName: config.ReplenishProviderKiroappcc,
+		},
+		{
+			name:     "kiroapp.cc alias",
+			provider: "kiroapp.cc",
+			sc:       config.SupplierConfig{ApiKey: "cc_1"},
+			wantName: config.ReplenishProviderKiroappcc,
+		},
+		{
+			// 这家也有默认地址，同样只缺密钥时报错。
+			name:     "kiroappcc without key errors",
+			provider: "kiroappcc",
+			sc:       config.SupplierConfig{},
+			wantErr:  true,
+		},
+		{
 			name:     "unknown provider errors",
 			provider: "nope",
 			sc:       config.SupplierConfig{ApiKey: "x"},
@@ -389,6 +408,21 @@ func TestEnabledProviders(t *testing.T) {
 				config.ReplenishProviderKiroappio: {Enabled: true, ApiKey: "km_1"},
 			}},
 			want: []string{config.ReplenishProviderKiroappio},
+		},
+		{
+			// 三家全开：顺序必须与 ReplenishProviders() 声明一致，
+			// 否则「先买哪家」会随 map 遍历顺序漂移，日志与摘要都对不上。
+			name: "all three enabled keeps declared order",
+			rc: config.ReplenishConfig{Suppliers: map[string]config.SupplierConfig{
+				config.ReplenishProviderKiroappcc: {Enabled: true, ApiKey: "cc_1"},
+				config.ReplenishProviderKiroappio: {Enabled: true, ApiKey: "km_1"},
+				config.ReplenishProviderKiross:    {Enabled: true, ApiKey: "usr-x"},
+			}},
+			want: []string{
+				config.ReplenishProviderKiross,
+				config.ReplenishProviderKiroappio,
+				config.ReplenishProviderKiroappcc,
+			},
 		},
 		{
 			name: "both enabled keeps declared order",

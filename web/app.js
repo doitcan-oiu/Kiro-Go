@@ -3044,7 +3044,7 @@
   }
 
   // 各供应商的展示名。未知标识回退到原始 id，保证新增供应商也能显示。
-  const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io' };
+  const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io', kiroappcc: 'kiroapp.cc' };
   function replenishProviderLabel(p) { return REPLENISH_PROVIDER_LABELS[p] || p; }
 
   // renderReplenishSuppliers 为每家供应商渲染一个面板。
