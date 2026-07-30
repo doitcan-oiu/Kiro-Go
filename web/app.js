@@ -3023,26 +3023,7 @@
       const d = await res.json();
       const setVal = (id, v) => { const el = $(id); if (el) el.value = v; };
       const setChk = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
-      setVal('replenishProvider', d.provider || 'default');
-      setVal('replenishBaseUrl', d.baseUrl || '');
-      // 密钥从不明文回显：有值时用掩码作占位，输入框留空表示保持不变。
-      const keyEl = $('replenishApiKey');
-      if (keyEl) {
-        keyEl.value = '';
-        keyEl.placeholder = d.hasApiKey ? (d.apiKeyMasked || '••••••') : t('replenish.apiKeyPlaceholder');
-      }
-      setVal('replenishKiroappBaseUrl', d.kiroappBaseUrl || '');
-      const kKeyEl = $('replenishKiroappApiKey');
-      if (kKeyEl) {
-        kKeyEl.value = '';
-        kKeyEl.placeholder = d.hasKiroappApiKey ? (d.kiroappApiKeyMasked || '••••••') : t('replenish.kiroappApiKeyPlaceholder');
-      }
-      setVal('replenishKiroappioBaseUrl', d.kiroappioBaseUrl || '');
-      const ioKeyEl = $('replenishKiroappioApiKey');
-      if (ioKeyEl) {
-        ioKeyEl.value = '';
-        ioKeyEl.placeholder = d.hasKiroappioApiKey ? (d.kiroappioApiKeyMasked || '••••••') : t('replenish.kiroappioApiKeyPlaceholder');
-      }
+      // 供应商已全部移除，连接信息与推送式补号的字段不再回填（面板上也已无对应控件）。
       setVal('replenishRegion', d.region || '');
       setChk('replenishEnabled', d.enabled);
       setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
@@ -3050,12 +3031,7 @@
       setVal('replenishInterval', d.intervalSeconds != null ? d.intervalSeconds : 0);
       setChk('replenishAllDead', d.allDeadReplenish);
       setVal('replenishAllDeadCount', d.allDeadCount != null ? d.allDeadCount : 0);
-      setVal('replenishWebhookMaxCount', d.webhookMaxCount != null ? d.webhookMaxCount : 0);
-      setVal('replenishPublicBaseUrl', d.publicBaseUrl || '');
-      setVal('replenishCallbackUrl', d.callbackUrl || d.webhookUrl || '');
-      updateReplenishProviderUI();
       renderReplenishStatus(d);
-      renderReplenishWebhookStatus(d);
       renderReplenishCredentials(d);
     } catch (e) {
       console.warn('[Replenish] load failed', e);
@@ -3077,28 +3053,6 @@
     }
     box.innerHTML = html;
   }
-  // 各供应商的能力表，与后端 config.SupportsWebhook / SupportsWebhookAutoRegister
-  // 保持一致。放在前端是为了切换下拉框时立即反映，无需等一次 GET。
-  const REPLENISH_PROVIDERS = {
-    'default':   { fields: 'replenishVendorFields',    webhook: true,  autoRegister: true },
-    'kiroapp':   { fields: 'replenishKiroappFields',   webhook: false, autoRegister: false },
-    'kiroappio': { fields: 'replenishKiroappioFields', webhook: true,  autoRegister: false }
-  };
-  // 按当前选中的供应商切换连接字段与推送式补号卡片的可见性：
-  // kiroapp.cc 没有 webhook 接口（整卡隐藏）；kiroapp.io 有推送但回调地址只能在其
-  // 站点后台手填，因此隐藏「注册回调」按钮，改为展示地址供复制。
-  function updateReplenishProviderUI() {
-    const provider = ($('replenishProvider') || {}).value || 'default';
-    const caps = REPLENISH_PROVIDERS[provider] || REPLENISH_PROVIDERS['default'];
-    const toggle = (id, show) => { const el = $(id); if (el) el.classList.toggle('hidden', !show); };
-    Object.keys(REPLENISH_PROVIDERS).forEach(p => {
-      toggle(REPLENISH_PROVIDERS[p].fields, p === provider);
-    });
-    toggle('replenishWebhookCard', caps.webhook);
-    // 自动注册按钮 vs 手工填写说明，二者互斥。
-    toggle('replenishAutoRegisterRow', caps.autoRegister);
-    toggle('replenishManualRegisterHint', caps.webhook && !caps.autoRegister);
-  }
   // 展示凭证健康度，让用户知道「全部凭证禁用」触发条件当前是否成立。
   function renderReplenishCredentials(d) {
     const box = $('replenishCredentials');
@@ -3116,141 +3070,23 @@
     const num = id => { const el = $(id); if (!el) return 0; const v = parseInt((el.value || '').trim(), 10); return isNaN(v) ? 0 : v; };
     const str = id => { const el = $(id); return el ? (el.value || '').trim() : ''; };
     const chk = id => { const el = $(id); return el ? !!el.checked : false; };
-    const payload = {
-      provider: ($('replenishProvider') || {}).value || 'default',
-      baseUrl: str('replenishBaseUrl'),
-      kiroappBaseUrl: str('replenishKiroappBaseUrl'),
-      kiroappioBaseUrl: str('replenishKiroappioBaseUrl'),
+    // 供应商已全部移除，只提交策略字段；连接信息（provider/baseUrl/密钥）不再由
+    // 面板管理，后端保留字段等接入新供应商时复用。
+    return {
       region: str('replenishRegion'),
       enabled: chk('replenishEnabled'),
       minPoolSize: num('replenishMinPoolSize'),
       batchCount: num('replenishBatchCount'),
       intervalSeconds: num('replenishInterval'),
       allDeadReplenish: chk('replenishAllDead'),
-      allDeadCount: num('replenishAllDeadCount'),
-      webhookMaxCount: num('replenishWebhookMaxCount'),
-      publicBaseUrl: str('replenishPublicBaseUrl')
+      allDeadCount: num('replenishAllDeadCount')
     };
-    // 密钥仅在用户输入了新值时才提交（空 = 保持不变）。
-    const key = str('replenishApiKey');
-    if (key) payload.apiKey = key;
-    const kKey = str('replenishKiroappApiKey');
-    if (kKey) payload.kiroappApiKey = kKey;
-    const ioKey = str('replenishKiroappioApiKey');
-    if (ioKey) payload.kiroappioApiKey = ioKey;
-    return payload;
-  }
-  function renderReplenishWebhookStatus(d) {
-    const box = $('replenishLastWebhook');
-    if (!box) return;
-    if (!d.lastWebhookAt) {
-      box.innerHTML = '<span class="text-muted">' + t('replenish.webhookNever') + '</span>';
-      return;
-    }
-    const when = new Date(d.lastWebhookAt * 1000).toLocaleString();
-    let html = '<div class="replenish-status-line"><span class="muted-text">' + t('replenish.webhookLast') + '</span> ' + when + '</div>';
-    if (d.lastWebhookMsg) {
-      html += '<div class="replenish-status-line">' + escapeHtml(d.lastWebhookMsg) + '</div>';
-    }
-    box.innerHTML = html;
-  }
-  async function registerReplenishWebhook() {
-    // 先保存表单，确保注册用的是面板上的公网地址与供应商连接信息。
-    const saveRes = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
-    const saveData = await saveRes.json();
-    if (!saveData.success) { toast(t('common.saveFailed') + ': ' + (saveData.error || ''), 'error'); return; }
-    const btn = $('registerReplenishWebhookBtn');
-    if (btn) btn.disabled = true;
-    try {
-      const res = await api('/replenish/register-webhook', { method: 'POST' });
-      const d = await res.json();
-      if (d.success) {
-        if (d.callbackUrl) { const el = $('replenishCallbackUrl'); if (el) el.value = d.callbackUrl; }
-        toastPrimary(t('replenish.registerOk'), { duration: 5000 });
-      } else toastError(t('replenish.registerFailed') + ': ' + (d.error || ''));
-    } finally {
-      if (btn) btn.disabled = false;
-      loadReplenish();
-    }
-  }
-  async function resetReplenishSecret() {
-    if (!confirm(t('replenish.resetConfirm'))) return;
-    const res = await api('/replenish/reset-secret', { method: 'POST' });
-    const d = await res.json();
-    if (d.success) {
-      const el = $('replenishCallbackUrl'); if (el) el.value = d.callbackUrl || '';
-      toastPrimary(t('replenish.resetOk'), { duration: 5000 });
-    } else toastError(t('common.failed') + ': ' + (d.error || ''));
-    loadReplenish();
-  }
-  async function copyReplenishCallback() {
-    const url = ($('replenishCallbackUrl').value || '').trim();
-    if (!url) return toastWarning(t('replenish.callbackEmpty'));
-    try {
-      await navigator.clipboard.writeText(url);
-      toastPrimary(t('common.copied'));
-    } catch { toastError(t('common.failed')); }
   }
   async function saveReplenish() {
     const res = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
     const d = await res.json();
     if (d.success) { toast(t('replenish.saved'), 'success'); loadReplenish(); }
     else toast(t('common.saveFailed') + ': ' + (d.error || ''), 'error');
-  }
-  async function testReplenish() {
-    // 先保存当前表单，确保测试用的是面板上的连接信息。
-    const saveRes = await api('/replenish', { method: 'POST', body: JSON.stringify(collectReplenishPayload()) });
-    const saveData = await saveRes.json();
-    if (!saveData.success) { toast(t('common.saveFailed') + ': ' + (saveData.error || ''), 'error'); return; }
-    const btn = $('testReplenishBtn');
-    if (btn) btn.disabled = true;
-    try {
-      const res = await api('/replenish/test', { method: 'POST' });
-      const d = await res.json();
-      if (d.success) {
-        // 供应商字段覆盖度不同：vendor 有账户名与配额，kiroapp.cc 只有余额/单价，
-        // kiroapp.io 有账户名 + 阶梯价区间。
-        const stock = d.stock != null ? d.stock : '-';
-        let msg;
-        if (d.provider === 'kiroappio') {
-          const price = d.priceMax != null && d.priceMax !== d.priceMin
-            ? formatNumber(d.priceMin) + '~' + formatNumber(d.priceMax)
-            : (d.priceMin != null ? formatNumber(d.priceMin) : '-');
-          msg = t('replenish.testOkKiroappio', d.name || '-', formatNumber(d.remaining), stock, price);
-        } else if (d.name) {
-          msg = t('replenish.testOk', d.name, formatNumber(d.remaining), stock);
-        } else {
-          msg = t('replenish.testOkKiroapp', formatNumber(d.remaining), stock,
-            d.keyPrice != null ? formatNumber(d.keyPrice) : '-');
-        }
-        toastPrimary(msg, { duration: 6000 });
-      } else {
-        toastError(t('replenish.testFailed') + ': ' + (d.error || ''));
-      }
-    } finally {
-      if (btn) btn.disabled = false;
-      loadReplenish();
-    }
-  }
-  async function runReplenish() {
-    const raw = ($('replenishManualCount').value || '').trim();
-    const count = parseInt(raw, 10);
-    const body = (!isNaN(count) && count > 0) ? JSON.stringify({ count }) : '{}';
-    const btn = $('runReplenishBtn');
-    if (btn) btn.disabled = true;
-    try {
-      const res = await api('/replenish/run', { method: 'POST', body });
-      const d = await res.json();
-      if (d.success) {
-        toastPrimary(t('replenish.runOk', d.purchased || 0, d.imported || 0, d.skipped || 0), { duration: 6000 });
-        loadStats(); loadAccounts();
-      } else {
-        toastError(t('replenish.runFailed') + ': ' + (d.error || ''));
-      }
-    } finally {
-      if (btn) btn.disabled = false;
-      loadReplenish();
-    }
   }
   async function importSsoToken() {
     const res = await api('/auth/sso-token', {
@@ -3862,26 +3698,12 @@
     bindReplenishEvents();
   }
 
+  // 供应商已全部移除，面板只剩「保存策略」：两张卡片共用同一个保存动作。
   function bindReplenishEvents() {
     const save = $('saveReplenishBtn');
     if (save) save.addEventListener('click', saveReplenish);
     const savePolicy = $('saveReplenishPolicyBtn');
     if (savePolicy) savePolicy.addEventListener('click', saveReplenish);
-    const saveWebhook = $('saveReplenishWebhookBtn');
-    if (saveWebhook) saveWebhook.addEventListener('click', saveReplenish);
-    const test = $('testReplenishBtn');
-    if (test) test.addEventListener('click', testReplenish);
-    const run = $('runReplenishBtn');
-    if (run) run.addEventListener('click', runReplenish);
-    const reg = $('registerReplenishWebhookBtn');
-    if (reg) reg.addEventListener('click', registerReplenishWebhook);
-    const reset = $('resetReplenishSecretBtn');
-    if (reset) reset.addEventListener('click', resetReplenishSecret);
-    const copy = $('copyReplenishCallbackBtn');
-    if (copy) copy.addEventListener('click', copyReplenishCallback);
-    // 切换供应商时立即切换连接字段，无需先保存。
-    const provider = $('replenishProvider');
-    if (provider) provider.addEventListener('change', updateReplenishProviderUI);
   }
 
   function bindPromptFilterEvents() {

@@ -590,71 +590,18 @@
 
       <!-- Replenish (补号) tab -->
       <div id="tabReplenish" class="tab-content hidden">
-        <!-- Supplier connection -->
+        <!-- Supplier connection. All supplier clients were removed; the framework
+             (policy, polling loop, webhook endpoint, import path) is still here, so
+             wiring a new supplier only needs a replenishSupplier implementation. -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.supplierTitle"></span></div>
-          <div class="form-group">
-            <label for="replenishProvider" data-i18n="replenish.provider"></label>
-            <select id="replenishProvider">
-              <option value="default" data-i18n="replenish.providerVendor"></option>
-              <option value="kiroapp" data-i18n="replenish.providerKiroapp"></option>
-              <option value="kiroappio" data-i18n="replenish.providerKiroappio"></option>
-            </select>
-            <small data-i18n="replenish.providerHint"></small>
-          </div>
-
-          <!-- Provider = default (vendor) connection fields -->
-          <div id="replenishVendorFields">
-            <div class="form-group">
-              <label data-i18n="replenish.baseUrl"></label>
-              <input type="text" id="replenishBaseUrl" placeholder="https://vendor.example.com" autocomplete="off" />
-              <small data-i18n="replenish.baseUrlHint"></small>
-            </div>
-            <div class="form-group">
-              <label data-i18n="replenish.apiKey"></label>
-              <input type="password" id="replenishApiKey" data-i18n-placeholder="replenish.apiKeyPlaceholder" autocomplete="new-password" />
-              <small data-i18n="replenish.apiKeyHint"></small>
-            </div>
-          </div>
-
-          <!-- Provider = kiroapp.cc connection fields -->
-          <div id="replenishKiroappFields" class="hidden">
-            <div class="form-group">
-              <label data-i18n="replenish.kiroappBaseUrl"></label>
-              <input type="text" id="replenishKiroappBaseUrl" placeholder="https://kiroapp.cc" autocomplete="off" />
-              <small data-i18n="replenish.kiroappBaseUrlHint"></small>
-            </div>
-            <div class="form-group">
-              <label data-i18n="replenish.kiroappApiKey"></label>
-              <input type="password" id="replenishKiroappApiKey" data-i18n-placeholder="replenish.kiroappApiKeyPlaceholder" autocomplete="new-password" />
-              <small data-i18n="replenish.kiroappApiKeyHint"></small>
-            </div>
-          </div>
-
-          <!-- Provider = kiroapp.io connection fields -->
-          <div id="replenishKiroappioFields" class="hidden">
-            <div class="form-group">
-              <label data-i18n="replenish.kiroappioBaseUrl"></label>
-              <input type="text" id="replenishKiroappioBaseUrl" placeholder="http://kiroapp.io" autocomplete="off" />
-              <small data-i18n="replenish.kiroappioBaseUrlHint"></small>
-            </div>
-            <div class="form-group">
-              <label data-i18n="replenish.kiroappioApiKey"></label>
-              <input type="password" id="replenishKiroappioApiKey" data-i18n-placeholder="replenish.kiroappioApiKeyPlaceholder" autocomplete="new-password" />
-              <small data-i18n="replenish.kiroappioApiKeyHint"></small>
-            </div>
-          </div>
-
-          <div class="form-group">
+          <p class="text-sm muted-text" data-i18n="replenish.noProviders"></p>
+          <div class="form-group mt-3">
             <label data-i18n="replenish.region"></label>
             <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
             <small data-i18n="replenish.regionHint"></small>
           </div>
-          <div class="flex gap-2">
-            <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
-            <button class="btn btn-outline" id="testReplenishBtn" data-i18n="replenish.test"></button>
-          </div>
-          <div id="replenishTestResult" class="text-sm mt-2"></div>
+          <button class="btn btn-primary" id="saveReplenishBtn" data-i18n="replenish.save"></button>
         </div>
 
         <!-- Auto-replenish policy -->
@@ -703,58 +650,12 @@
           <button class="btn btn-primary" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
         </div>
 
-        <!-- Push-based replenish (supplier webhook). Hidden for providers with no
-             webhook support (kiroapp.cc) — see updateReplenishProviderUI. -->
-        <div class="card" id="replenishWebhookCard">
-          <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
-          <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
-          <!-- Shown for providers whose callback URL must be pasted into their own
-               dashboard (kiroapp.io has no register API). -->
-          <p class="text-sm muted-text mb-2 hidden" id="replenishManualRegisterHint" data-i18n="replenish.manualRegisterHint"></p>
-          <div class="form-group">
-            <label data-i18n="replenish.webhookMaxCount"></label>
-            <input type="number" id="replenishWebhookMaxCount" min="0" placeholder="0" />
-            <small data-i18n="replenish.webhookMaxCountHint"></small>
-          </div>
-          <div class="form-group">
-            <label data-i18n="replenish.publicBaseUrl"></label>
-            <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
-            <small data-i18n="replenish.publicBaseUrlHint"></small>
-          </div>
-          <div class="form-group">
-            <label data-i18n="replenish.callbackUrl"></label>
-            <div class="input-row">
-              <input type="text" id="replenishCallbackUrl" readonly />
-              <button class="btn btn-outline" id="copyReplenishCallbackBtn" type="button" data-i18n="replenish.copy"></button>
-            </div>
-            <small data-i18n="replenish.callbackUrlHint"></small>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn btn-primary" id="saveReplenishWebhookBtn" data-i18n="replenish.save"></button>
-            <!-- Only providers with a register API get this button; kiroapp.io needs
-                 the callback URL pasted into its own dashboard instead. -->
-            <span id="replenishAutoRegisterRow" class="flex gap-2">
-              <button class="btn btn-outline" id="registerReplenishWebhookBtn" data-i18n="replenish.register"></button>
-            </span>
-            <button class="btn btn-outline" id="resetReplenishSecretBtn" data-i18n="replenish.resetSecret"></button>
-          </div>
-          <div class="form-group mt-3">
-            <label class="font-semibold" data-i18n="replenish.lastWebhookTitle"></label>
-            <div id="replenishLastWebhook" class="text-sm muted-text"></div>
-          </div>
-        </div>
-
-        <!-- Manual replenish -->
+        <!-- Last-run state. The manual trigger and the push-based (webhook) card were
+             removed along with the suppliers: with no supplier client there is
+             nothing to claim from, so only the historical state is shown. -->
         <div class="card">
           <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
           <div class="form-group">
-            <label data-i18n="replenish.manualCount"></label>
-            <input type="number" id="replenishManualCount" min="1" placeholder="5" />
-            <small data-i18n="replenish.manualCountHint"></small>
-          </div>
-          <button class="btn btn-primary" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
-          <div id="replenishRunResult" class="text-sm mt-2"></div>
-          <div class="form-group mt-3">
             <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
             <div id="replenishLastRun" class="text-sm muted-text"></div>
           </div>

@@ -1,36 +1,29 @@
 package proxy
 
-// 在线补号（在线购买 Kiro API Key 并导入账号池）。
+// 在线补号（在线购买 Kiro API Key 并导入账号池）的框架层。
 //
-// 本文件实现两层：
-//  1. replenishSupplier —— 供应商抽象。三个实现：
-//     - supplierClient（本文件，config.ReplenishProviderVendor，对接文档.md）：
-//     X-API-Key 头，/api/my/profile、/api/my/stock、/api/my/purchase，
-//     支持 client_order_id 幂等与 webhook 推送。
-//     - kiroappClient（replenish_kiroapp.go，config.ReplenishProviderKiroapp）：
-//     Authorization: Bearer，/openapi/balance、/openapi/stock、/openapi/claim，
-//     无幂等订单号、无 webhook，只能靠轮询。
-//     - kiroappioClient（replenish_kiroappio.go，config.ReplenishProviderKiroappio）：
-//     Authorization: Bearer km_，/api/me/profile、/api/me/stock、/api/me/purchase，
-//     支持 client_order_id 幂等与 webhook 推送（回调地址在其站点后台手填）。
-//     由 newReplenishSupplier 按 config 里的 Provider 选择。
-//  2. Handler 上的补号编排 —— runReplenishOnce 购买一批 Key 并复用既有的
+// 目前没有任何供应商实现：原先对接的三家（default / kiroapp.cc / kiroapp.io）已整体
+// 移除，newReplenishSupplier 因此一律返回 errNoReplenishSupplier。手动补号、后台
+// 轮询与 webhook 推送都会以「无可用供应商」失败，并把原因记录到运行态供面板展示。
+//
+// 保留下来的是与具体供应商无关的框架：
+//  1. replenishSupplier 抽象与统一的入参/结果 DTO（supplierClaimRequest /
+//     supplierClaim / supplierAccount）。新增供应商只需实现该接口，并在
+//     newReplenishSupplier 里挂上，其余编排无需改动。
+//  2. Handler 上的补号编排 —— runReplenishOnce 提取一批 Key 并复用既有的
 //     ImportApiKeys 导入到账号池；backgroundReplenish 周期性检查低水位与
-//     「全部凭证禁用」两种触发条件。
+//     「全部凭证禁用」两种触发条件；handleReplenishWebhookEvent 处理入站推送。
 //
-// 幂等：vendor 与 kiroappio 的 purchase 必填 client_order_id（32 位十六进制）。
-// 同一订单号+相同 count 重试返回首次结果且不重复扣费，因此调用方失败重试务必复用
-// 同一订单号。kiroapp 无此机制，重试会重复扣费，故其失败不做自动重试。
+// 幂等约定：框架统一为每次提取生成 32 位十六进制的 ClientOrderID（见
+// newClientOrderID），供应商实现无需自己造。支持幂等的上游应原样作为
+// client_order_id 上报，失败重试复用同一值即可避免重复扣费；不支持的上游忽略它，
+// 但其失败不应自动重试。
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -40,13 +33,13 @@ import (
 )
 
 // supplierAccount 是各供应商账户信息的统一视图（面板「测试连接」用）。
-// 不同供应商字段覆盖度不同：kiroapp.cc 只有余额与单价，没有名称/配额/已用量。
+// 各家字段覆盖度不同，用 Has* 标志位表明哪些字段有意义。
 type supplierAccount struct {
-	Name      string  // 账户名，kiroapp.cc 无此字段
-	Quota     float64 // 总配额，仅 vendor 提供
+	Name      string  // 账户名
+	Quota     float64 // 总配额
 	Remaining float64 // 剩余余额/积分
-	UsedQuota float64 // 已用配额，仅 vendor 提供
-	KeyPrice  float64 // 单价；阶梯定价的供应商这里是最低价
+	UsedQuota float64 // 已用配额
+	KeyPrice  float64 // 单价；阶梯定价时为最低价
 	PriceMax  float64 // 阶梯定价的最高价；0 表示单一价（无区间）
 	HasQuota  bool    // Quota/UsedQuota 是否有意义
 	HasPrice  bool    // KeyPrice/PriceMax 是否有意义
@@ -54,10 +47,10 @@ type supplierAccount struct {
 
 // supplierClaimRequest 是一次提取请求的统一入参。
 //
-// ClientOrderID 是幂等键：支持幂等的供应商（vendor / kiroappio）用它作为
-// client_order_id，失败重试复用同一值可避免重复扣费；不支持的实现（kiroapp）忽略它。
-// BatchOrderID 仅 kiroappio 有意义——webhook 推送里的开号批次 id，带上它只提取
-// 该批次产出的 Key。
+// ClientOrderID 是幂等键，由框架生成保证非空。支持幂等的供应商应把它作为
+// client_order_id 上报；不支持的实现忽略即可。
+// BatchOrderID 是可选的上游批次 id：webhook 推送里带批次概念的供应商可用它只提取
+// 该批次产出的 Key，无此概念的实现忽略。
 type supplierClaimRequest struct {
 	Count         int
 	ClientOrderID string
@@ -69,7 +62,7 @@ type supplierClaimRequest struct {
 // Purchased 是供应商自报的出 Key 数量（计费依据），可能与 len(Keys) 不同——例如
 // 幂等重试命中已有订单时。<=0 表示供应商未提供该字段，调用方应回退到 len(Keys)。
 //
-// Spent 是本次实际扣费总额，仅阶梯定价的供应商（kiroappio）提供；<=0 表示未提供。
+// Spent 是本次实际扣费总额，仅阶梯定价的供应商提供；<=0 表示未提供。
 type supplierClaim struct {
 	Keys      []string
 	Purchased int
@@ -98,189 +91,19 @@ type replenishSupplier interface {
 	ProviderName() string
 }
 
-// newReplenishSupplier 按配置里的 Provider 构造对应的供应商客户端。
+// errNoReplenishSupplier 表示当前没有任何可用的补号供应商。
+//
+// 三家原有供应商已整体移除，框架保留但无实现。所有补号入口（手动、轮询、webhook）
+// 都会拿到这个错误，因此面板上的失败原因是明确的「没有供应商」，而不是配置校验
+// 报错那类容易被误读为「填错了」的提示。
+var errNoReplenishSupplier = errors.New("no replenish supplier is available: all suppliers have been removed")
+
+// newReplenishSupplier 构造当前配置对应的供应商客户端。
+//
+// 目前恒定返回 errNoReplenishSupplier。新增供应商时在此按
+// rc.EffectiveProvider() 分支返回对应实现即可，调用方无需改动。
 func newReplenishSupplier(rc config.ReplenishConfig) (replenishSupplier, error) {
-	switch rc.EffectiveProvider() {
-	case config.ReplenishProviderKiroapp:
-		return newKiroappClient(rc)
-	case config.ReplenishProviderKiroappio:
-		return newKiroappioClient(rc)
-	default:
-		return newSupplierClient(rc)
-	}
-}
-
-// supplierClient 是对接上游供应商 API 的最小客户端。
-type supplierClient struct {
-	baseURL string
-	apiKey  string
-}
-
-// newSupplierClient 从补号配置构造客户端；baseURL/apiKey 缺失时返回错误。
-func newSupplierClient(rc config.ReplenishConfig) (*supplierClient, error) {
-	base := strings.TrimRight(strings.TrimSpace(rc.BaseURL), "/")
-	key := strings.TrimSpace(rc.ApiKey)
-	if base == "" {
-		return nil, errors.New("supplier baseUrl is not configured")
-	}
-	if key == "" {
-		return nil, errors.New("supplier apiKey is not configured")
-	}
-	return &supplierClient{baseURL: base, apiKey: key}, nil
-}
-
-func (c *supplierClient) ProviderName() string { return config.ReplenishProviderVendor }
-
-// Account 实现 replenishSupplier，包装 Profile。
-func (c *supplierClient) Account() (*supplierAccount, error) {
-	p, err := c.Profile()
-	if err != nil {
-		return nil, err
-	}
-	return &supplierAccount{
-		Name:      p.Name,
-		Quota:     p.Quota,
-		Remaining: p.Remaining,
-		UsedQuota: p.UsedQuota,
-		HasQuota:  true,
-	}, nil
-}
-
-// Claim 实现 replenishSupplier，包装带幂等订单号的 Purchase。
-// req.BatchOrderID 被忽略：该供应商无「按批次提取」的概念。
-func (c *supplierClient) Claim(req supplierClaimRequest) (*supplierClaim, error) {
-	orderID := strings.TrimSpace(req.ClientOrderID)
-	if orderID == "" {
-		orderID = newClientOrderID()
-	}
-	r, err := c.Purchase(req.Count, orderID)
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(r.Keys))
-	for _, k := range r.Keys {
-		if s := strings.TrimSpace(k.Key); s != "" {
-			keys = append(keys, s)
-		}
-	}
-	return &supplierClaim{
-		Keys:      keys,
-		Purchased: r.Purchased,
-		Remaining: r.Remaining,
-		OrderID:   r.ClientOrderID,
-	}, nil
-}
-
-// supplierProfile 对应 GET /api/my/profile 响应。
-type supplierProfile struct {
-	Name       string  `json:"name"`
-	Quota      float64 `json:"quota"`
-	Remaining  float64 `json:"remaining"`
-	UsedQuota  float64 `json:"used_quota"`
-	WebhookURL string  `json:"webhook_url"`
-}
-
-// supplierStock 对应 GET /api/my/stock 响应。
-type supplierStock struct {
-	Max int `json:"max"`
-}
-
-// supplierPurchaseResp 对应 POST /api/my/purchase 响应。
-type supplierPurchaseResp struct {
-	ClientOrderID string  `json:"client_order_id"`
-	Purchased     int     `json:"purchased"`
-	Remaining     float64 `json:"remaining"`
-	Keys          []struct {
-		Key string `json:"key"`
-	} `json:"keys"`
-}
-
-// do 发起一次带认证的请求，解析 JSON 到 out。非 2xx 时尝试解析 {"error":...}。
-// method 为 GET 时 body 应为 nil。
-func (c *supplierClient) do(method, path string, body interface{}, out interface{}) error {
-	var reqBody io.Reader
-	if body != nil {
-		buf, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reqBody = bytes.NewReader(buf)
-	}
-
-	req, err := http.NewRequest(method, c.baseURL+path, reqBody)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-API-Key", c.apiKey)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// 复用 Kiro REST client（遵循全局出站代理配置），10s 超时够用。
-	resp, err := GetRestClientForProxy(config.GetProxyURL()).Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// 失败响应格式为 {"error":"..."}
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(data, &errResp) == nil && errResp.Error != "" {
-			return fmt.Errorf("supplier %s %s: HTTP %d: %s", method, path, resp.StatusCode, errResp.Error)
-		}
-		return fmt.Errorf("supplier %s %s: HTTP %d", method, path, resp.StatusCode)
-	}
-
-	if out != nil {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("supplier %s %s: decode response: %w", method, path, err)
-		}
-	}
-	return nil
-}
-
-func (c *supplierClient) Profile() (*supplierProfile, error) {
-	var p supplierProfile
-	if err := c.do(http.MethodGet, "/api/my/profile", nil, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
-func (c *supplierClient) Stock() (int, error) {
-	var s supplierStock
-	if err := c.do(http.MethodGet, "/api/my/stock", nil, &s); err != nil {
-		return 0, err
-	}
-	return s.Max, nil
-}
-
-// Purchase 提取 count 个 Key。clientOrderID 必须是 32 位十六进制字符串；
-// 失败重试时复用同一订单号可避免重复扣费。
-func (c *supplierClient) Purchase(count int, clientOrderID string) (*supplierPurchaseResp, error) {
-	body := map[string]interface{}{
-		"count":           count,
-		"client_order_id": clientOrderID,
-	}
-	var r supplierPurchaseResp
-	if err := c.do(http.MethodPost, "/api/my/purchase", body, &r); err != nil {
-		return nil, err
-	}
-	return &r, nil
-}
-
-// SetWebhook 通过 PUT /api/my/webhook 把回调地址注册到供应商。
-func (c *supplierClient) SetWebhook(webhookURL string) error {
-	body := map[string]interface{}{"webhook_url": webhookURL}
-	return c.do(http.MethodPut, "/api/my/webhook", body, nil)
+	return nil, errNoReplenishSupplier
 }
 
 // newClientOrderID 生成 32 位十六进制订单号（16 字节随机）。

@@ -66,9 +66,9 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 		"supportsWebhook":             rc.SupportsWebhook(),
 		"supportsWebhookAutoRegister": rc.SupportsWebhookAutoRegister(),
 		"webhookMaxCount":             rc.WebhookMaxCount,
-		"publicBaseUrl":   rc.PublicBaseURL,
-		"webhookUrl":      webhookURL,
-		"hasSecret":       rc.WebhookSecret != "",
+		"publicBaseUrl":               rc.PublicBaseURL,
+		"webhookUrl":                  webhookURL,
+		"hasSecret":                   rc.WebhookSecret != "",
 		// 运行态
 		"lastRunAt":      rc.LastRunAt,
 		"lastError":      rc.LastError,
@@ -257,52 +257,14 @@ func (h *Handler) apiRunReplenish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiRegisterReplenishWebhook 把本服务的回调地址注册到供应商（PUT /api/my/webhook）。
-// 回调地址为 <公网基地址>/replenish/webhook/<secret>；secret 若尚未生成则自动创建。
-// 需先保存公网基地址（PublicBaseURL）。
+// apiRegisterReplenishWebhook 曾把回调地址注册到供应商（PUT /api/my/webhook）。
+// 供应商客户端已全部移除，已无可调用的注册接口，故一律返回 400。端点保留是为了让
+// 旧前端拿到明确原因而不是 404。
+//
+// 接回供应商时，在这里恢复「构造客户端 → 生成 secret → 调其注册接口」的流程。
 func (h *Handler) apiRegisterReplenishWebhook(w http.ResponseWriter, r *http.Request) {
-	rc := config.GetReplenishConfig()
-	// 只有 vendor 有注册回调的接口：kiroapp 无 webhook；kiroapp.io 有 webhook
-	// 但回调地址只能在其站点后台手填，没有可调用的注册接口。
-	if !rc.SupportsWebhookAutoRegister() {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "current provider has no webhook registration API; configure the callback URL on the supplier's site",
-		})
-		return
-	}
-	if strings.TrimSpace(rc.PublicBaseURL) == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "publicBaseUrl is not configured"})
-		return
-	}
-
-	client, err := newSupplierClient(rc)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
-	secret, err := config.GetOrCreateReplenishWebhookSecret()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
-	callbackURL := replenishWebhookPath(rc.PublicBaseURL, secret)
-	if err := client.SetWebhook(callbackURL); err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
-	logger.Infof("[Replenish] registered webhook callback with supplier")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"callbackUrl": callbackURL,
-	})
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(map[string]string{"error": errNoReplenishSupplier.Error()})
 }
 
 // apiResetReplenishSecret 重置回调路径密钥，旧回调地址立即失效。
