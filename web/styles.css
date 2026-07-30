@@ -4277,3 +4277,386 @@ img.brand-icon {
 .replenish-supplier.is-off {
   opacity: 0.6;
 }
+
+/* ============================================================
+   Replenish (补号) tab
+   ------------------------------------------------------------
+   Self-contained styles: this tab does not reuse the generic .form-group /
+   .switch styles, because those are tuned for a single-column settings form and
+   made this tab both very long and hard to read (the generic switch track uses
+   --input, which is nearly invisible on a --muted panel).
+
+   Everything here is prefixed rp- and defines its own colors from the theme
+   tokens, so it renders correctly on both light and dark themes.
+   ============================================================ */
+
+/* ---------- layout ---------- */
+
+/* Section spacing without a wrapper card: each block is separated by a rule,
+   which reads as "grouped" while costing far less vertical space than cards. */
+.rp-section + .rp-section {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+.rp-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.rp-section-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.rp-section-note {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin: -0.25rem 0 0.75rem;
+  line-height: 1.5;
+}
+.rp-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Two suppliers side by side; one column when narrow. */
+.rp-suppliers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+/* Shared settings laid out in a compact grid instead of one field per row. */
+.rp-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.875rem 1rem;
+}
+.rp-fields .rp-wide {
+  grid-column: 1 / -1;
+}
+@media (max-width: 820px) {
+  .rp-suppliers {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- fields ---------- */
+
+.rp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3125rem;
+  min-width: 0;
+}
+.rp-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+}
+/* Help marker: a real focusable/hoverable badge rather than a dotted underline,
+   so it is discoverable instead of looking like a rendering artifact. */
+.rp-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 0.625rem;
+  font-weight: 600;
+  cursor: help;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.rp-help:hover {
+  color: var(--foreground);
+  border-color: var(--muted-foreground);
+}
+
+/* Inputs are styled here rather than inheriting the global input rules, so the
+   tab keeps a consistent compact rhythm. */
+.rp-input {
+  width: 100%;
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rp-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.rp-input:read-only {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.rp-input-num {
+  width: 5rem;
+  text-align: center;
+}
+.rp-input-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+}
+
+/* ---------- supplier panel ---------- */
+
+.rp-supplier {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card, var(--background));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+/* An enabled supplier is spending money, so it gets a clear accent edge. */
+.rp-supplier.is-on {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  box-shadow: inset 3px 0 0 0 var(--primary);
+}
+
+.rp-supplier-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.875rem;
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.rp-supplier-id {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.rp-supplier-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+/* State chip so "is this one buying?" is readable without decoding a toggle. */
+.rp-state {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.rp-state.is-on {
+  color: #047857;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+.rp-state.is-off {
+  color: var(--muted-foreground);
+  background: var(--background);
+  border-color: var(--border);
+}
+.dark .rp-state.is-on,
+[data-theme="dark"] .rp-state.is-on {
+  color: #6ee7b7;
+  background: #022c22;
+  border-color: #065f46;
+}
+
+.rp-supplier-body {
+  padding: 0.875rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.rp-supplier-foot {
+  padding: 0.5rem 0.875rem 0.75rem;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  border-top: 1px dashed var(--border);
+  word-break: break-word;
+}
+
+/* ---------- toggle ---------- */
+
+/* Own switch implementation. The generic .switch uses --input for the track,
+   which sits at ~1.06:1 contrast against the --muted panel behind it — visually
+   absent. This one always keeps a visible border and a bold knob. */
+.rp-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 1.375rem;
+  cursor: pointer;
+}
+.rp-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+.rp-toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: var(--background);
+  border: 1.5px solid var(--muted-foreground);
+  transition: background-color 0.18s, border-color 0.18s;
+  pointer-events: none;
+}
+.rp-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0.1875rem;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-top: -0.4375rem;
+  border-radius: 9999px;
+  background: var(--muted-foreground);
+  transition: transform 0.18s, background-color 0.18s;
+}
+.rp-toggle input:checked + .rp-toggle-track {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.rp-toggle input:checked + .rp-toggle-track::after {
+  transform: translateX(1.0625rem);
+  background: var(--primary-foreground, var(--background));
+}
+.rp-toggle input:focus-visible + .rp-toggle-track {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+
+/* ---------- inline count ---------- */
+
+/* "buy N per push" reads as a sentence rather than a labelled form field. */
+.rp-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* ---------- callback row ---------- */
+
+.rp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.rp-row .rp-input {
+  flex: 1;
+}
+
+/* Icon-only action button, sized to match .rp-input height. */
+.rp-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  padding: 0;
+  color: var(--muted-foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.rp-icon-btn:hover {
+  color: var(--foreground);
+  border-color: var(--muted-foreground);
+  background: var(--muted);
+}
+.rp-text-btn {
+  height: 2rem;
+  padding: 0 0.625rem;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.rp-text-btn:hover {
+  border-color: var(--muted-foreground);
+  background: var(--muted);
+}
+
+/* Note for suppliers whose callback must be pasted into their own dashboard. */
+.rp-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.4375rem;
+  height: 2rem;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ---------- status output ---------- */
+
+.rp-status {
+  font-size: 0.75rem;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.rp-status-line + .rp-status-line {
+  margin-top: 0.1875rem;
+}
+.rp-ok {
+  color: #047857;
+}
+.rp-err {
+  color: #b91c1c;
+}
+.dark .rp-ok,
+[data-theme="dark"] .rp-ok {
+  color: #6ee7b7;
+}
+.dark .rp-err,
+[data-theme="dark"] .rp-err {
+  color: #fca5a5;
+}
+.rp-muted {
+  color: var(--muted-foreground);
+}
+

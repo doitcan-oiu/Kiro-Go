@@ -3047,103 +3047,136 @@
   const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io' };
   function replenishProviderLabel(p) { return REPLENISH_PROVIDER_LABELS[p] || p; }
 
-  // renderReplenishSuppliers 为每家供应商渲染一张紧凑配置卡片。
+  // renderReplenishSuppliers 为每家供应商渲染一个面板。
   //
-  // 布局要点（两家并排、整页不拉长）：
-  //   - 字段说明放 title 悬浮提示，不占纵向空间。
-  //   - 开关与「每次推送买几个」同一行；地址/密钥各占一行。
-  //   - 回调地址与其操作按钮同一行；无自动注册接口的用一个小徽标说明需手填。
+  // 结构（每家一个 .rp-supplier）：
+  //   头部  开关 + 名称 + 启用状态徽标（开关之外再给一个文字状态，避免只靠
+  //         开关颜色判断「这家是否在花钱」）
+  //   主体  地址 / 密钥 / 每次推送买几个 / 回调地址与其操作
+  //   底部  上次收到推送
   // 密钥输入框始终留空：有值时用掩码作占位，空提交表示保持原密钥不变。
   function renderReplenishSuppliers(list) {
     const box = $('replenishSuppliers');
     if (!box) return;
     if (!list.length) {
-      box.innerHTML = '<p class="text-sm muted-text">' + t('replenish.noProviders') + '</p>';
+      box.innerHTML = '<p class="rp-status rp-muted">' + escapeHtml(t('replenish.noProviders')) + '</p>';
       return;
     }
     box.innerHTML = list.map(s => {
-      const p = escapeHtml(s.provider);
+      const p = escapeAttr(s.provider);
       const keyPlaceholder = s.hasApiKey ? (s.apiKeyMasked || '\u2022\u2022\u2022\u2022\u2022\u2022') : t('replenish.apiKeyPlaceholder');
       const callback = s.callbackUrl || '';
-      // 能自动注册的给按钮；否则用徽标说明要手工填到对方后台（hover 看详情）。
+      // 能自动注册的给按钮；不能的说明要手工粘到对方后台（hover 看详情）。
       const registerCtl = s.supportsWebhookAutoRegister
-        ? '<button class="btn btn-outline btn-sm" data-replenish-register="' + p + '">' + t('replenish.register') + '</button>'
-        : '<span class="replenish-badge" title="' + escapeAttr(t('replenish.manualRegisterHint')) + '">' + t('replenish.manualBadge') + '</span>';
+        ? '<button class="rp-text-btn" data-replenish-register="' + p + '">'
+            + escapeHtml(t('replenish.register')) + '</button>'
+        : '<span class="rp-note" title="' + escapeAttr(t('replenish.manualRegisterHint')) + '">'
+            + escapeHtml(t('replenish.manualBadge')) + '</span>';
+
       return '' +
-        '<div class="replenish-supplier' + (s.enabled ? '' : ' is-off') + '" data-replenish-provider="' + p + '">' +
-          '<div class="replenish-supplier-head">' +
-            '<label class="replenish-supplier-toggle">' +
-              '<span class="switch"><input type="checkbox" data-replenish-field="enabled"' + (s.enabled ? ' checked' : '') + ' /><span class="slider"></span></span>' +
-              '<span class="replenish-supplier-name">' + escapeHtml(replenishProviderLabel(s.provider)) + '</span>' +
-            '</label>' +
-            '<span class="replenish-supplier-count replenish-hint" title="' + escapeAttr(t('replenish.webhookCountHint')) + '">' +
-              '<span>' + t('replenish.webhookCountShort') + '</span>' +
-              '<input type="number" min="0" data-replenish-field="webhookCount" value="' + (s.webhookCount || 0) + '" />' +
+      '<div class="rp-supplier' + (s.enabled ? ' is-on' : '') + '" data-replenish-provider="' + p + '">' +
+        '<div class="rp-supplier-head">' +
+          '<label class="rp-supplier-id">' +
+            '<span class="rp-toggle">' +
+              '<input type="checkbox" data-replenish-field="enabled"' + (s.enabled ? ' checked' : '') + ' />' +
+              '<span class="rp-toggle-track"></span>' +
             '</span>' +
+            '<span class="rp-supplier-name">' + escapeHtml(replenishProviderLabel(s.provider)) + '</span>' +
+          '</label>' +
+          '<span class="rp-state ' + (s.enabled ? 'is-on' : 'is-off') + '">' +
+            escapeHtml(t(s.enabled ? 'replenish.stateOn' : 'replenish.stateOff')) + '</span>' +
+        '</div>' +
+
+        '<div class="rp-supplier-body">' +
+          '<div class="rp-field">' +
+            '<span class="rp-label">' + escapeHtml(t('replenish.baseUrl')) +
+              '<span class="rp-help" title="' + escapeAttr(t('replenish.baseUrlHint')) + '">?</span>' +
+            '</span>' +
+            '<input class="rp-input" type="text" data-replenish-field="baseUrl"' +
+              ' value="' + escapeAttr(s.baseUrl || '') + '"' +
+              ' placeholder="' + escapeAttr(s.baseUrlHint || 'https://\u2026') + '" autocomplete="off" />' +
           '</div>' +
-          '<div class="replenish-supplier-body">' +
-            '<input type="text" data-replenish-field="baseUrl" value="' + escapeAttr(s.baseUrl || '') + '"' +
-              ' placeholder="' + escapeAttr(s.baseUrlHint || t('replenish.baseUrl')) + '"' +
-              ' title="' + escapeAttr(t('replenish.baseUrlHint')) + '" autocomplete="off" />' +
-            '<input type="password" data-replenish-field="apiKey" value=""' +
-              ' placeholder="' + escapeAttr(keyPlaceholder) + '"' +
-              ' title="' + escapeAttr(t('replenish.apiKeyHint')) + '" autocomplete="new-password" />' +
-            '<div class="replenish-callback-row">' +
-              '<input type="text" data-replenish-callback="' + p + '" value="' + escapeAttr(callback) + '"' +
-                ' placeholder="' + escapeAttr(t('replenish.callbackEmptyShort')) + '"' +
-                ' title="' + escapeAttr(t('replenish.callbackUrlHint')) + '" readonly />' +
-              '<button class="btn btn-outline btn-sm" data-replenish-copy="' + p + '" title="' + escapeAttr(t('replenish.copy')) + '">' +
-                '<i class="fa-regular fa-copy"></i></button>' +
+
+          '<div class="rp-field">' +
+            '<span class="rp-label">' + escapeHtml(t('replenish.apiKey')) +
+              '<span class="rp-help" title="' + escapeAttr(t('replenish.apiKeyHint')) + '">?</span>' +
+            '</span>' +
+            '<input class="rp-input" type="password" data-replenish-field="apiKey" value=""' +
+              ' placeholder="' + escapeAttr(keyPlaceholder) + '" autocomplete="new-password" />' +
+          '</div>' +
+
+          '<label class="rp-count">' +
+            '<span>' + escapeHtml(t('replenish.webhookCountShort')) + '</span>' +
+            '<input class="rp-input rp-input-num" type="number" min="0" data-replenish-field="webhookCount"' +
+              ' value="' + (s.webhookCount || 0) + '" />' +
+            '<span class="rp-help" title="' + escapeAttr(t('replenish.webhookCountHint')) + '">?</span>' +
+          '</label>' +
+
+          '<div class="rp-field">' +
+            '<span class="rp-label">' + escapeHtml(t('replenish.callbackUrl')) +
+              '<span class="rp-help" title="' + escapeAttr(t('replenish.callbackUrlHint')) + '">?</span>' +
+            '</span>' +
+            '<div class="rp-row">' +
+              '<input class="rp-input rp-input-mono" type="text" readonly' +
+                ' data-replenish-callback="' + p + '" value="' + escapeAttr(callback) + '"' +
+                ' placeholder="' + escapeAttr(t('replenish.callbackEmptyShort')) + '" />' +
+              '<button class="rp-icon-btn" data-replenish-copy="' + p + '"' +
+                ' title="' + escapeAttr(t('replenish.copy')) + '"><i class="fa-regular fa-copy"></i></button>' +
               registerCtl +
-              '<button class="btn btn-outline btn-sm" data-replenish-reset="' + p + '" title="' + escapeAttr(t('replenish.resetSecret')) + '">' +
-                '<i class="fa-solid fa-rotate"></i></button>' +
+              '<button class="rp-icon-btn" data-replenish-reset="' + p + '"' +
+                ' title="' + escapeAttr(t('replenish.resetSecret')) + '"><i class="fa-solid fa-rotate"></i></button>' +
             '</div>' +
-            '<div class="replenish-supplier-foot text-sm muted-text">' + replenishWebhookLine(s) + '</div>' +
           '</div>' +
-        '</div>';
+        '</div>' +
+
+        '<div class="rp-supplier-foot">' + replenishWebhookLine(s) + '</div>' +
+      '</div>';
     }).join('');
   }
 
-  // replenishWebhookLine 渲染单家的「上次收到推送」一行。
+  // replenishWebhookLine 渲染单家的「上次收到推送」。
   function replenishWebhookLine(s) {
-    if (!s.lastWebhookAt) return t('replenish.webhookNever');
+    if (!s.lastWebhookAt) return escapeHtml(t('replenish.webhookNever'));
     const when = new Date(s.lastWebhookAt * 1000).toLocaleString();
-    let html = '<div>' + t('replenish.webhookLast') + ' ' + when + '</div>';
-    if (s.lastWebhookMsg) html += '<div>' + escapeHtml(s.lastWebhookMsg) + '</div>';
+    let html = escapeHtml(t('replenish.webhookLast')) + ' ' + escapeHtml(when);
+    if (s.lastWebhookMsg) html += '<br>' + escapeHtml(s.lastWebhookMsg);
     return html;
   }
 
+  // renderReplenishStatus 渲染「上次补号」结果。
+  // 两家并行时可能一家成功一家失败，因此结果与错误要同时展示，不是二选一。
   function renderReplenishStatus(d) {
     const box = $('replenishLastRun');
     if (!box) return;
     if (!d.lastRunAt) {
-      box.innerHTML = '<span class="text-muted">' + t('replenish.neverRun') + '</span>';
+      box.innerHTML = '<span class="rp-muted">' + escapeHtml(t('replenish.neverRun')) + '</span>';
       return;
     }
     const when = new Date(d.lastRunAt * 1000).toLocaleString();
-    let html = '<div class="replenish-status-line"><span class="muted-text">' + t('replenish.lastRun') + '</span> ' + when + '</div>';
+    let html = '<div class="rp-status-line rp-muted">' + escapeHtml(t('replenish.lastRun')) + ' ' + escapeHtml(when) + '</div>';
     if (d.lastResult) {
-      html += '<div class="replenish-status-line text-success"><i class="fa-solid fa-check"></i> ' + escapeHtml(d.lastResult) + '</div>';
+      html += '<div class="rp-status-line rp-ok">' + escapeHtml(d.lastResult) + '</div>';
     }
-    // 两家并行时可能「一家成功一家失败」，因此结果与错误要同时展示。
     if (d.lastError) {
-      html += '<div class="replenish-status-line text-danger"><i class="fa-solid fa-triangle-exclamation"></i> ' + escapeHtml(d.lastError) + '</div>';
+      html += '<div class="rp-status-line rp-err">' + escapeHtml(d.lastError) + '</div>';
     }
     box.innerHTML = html;
   }
-  // 展示凭证健康度，让用户知道「全部凭证禁用」触发条件当前是否成立。
+
+  // renderReplenishCredentials 展示凭证健康度，让用户知道「全部凭证禁用」这个
+  // 触发条件当前是否成立。
   function renderReplenishCredentials(d) {
     const box = $('replenishCredentials');
     if (!box) return;
     if (d.credentialsTotal == null) { box.innerHTML = ''; return; }
     const summary = t('replenish.credentialsSummary', d.credentialsEnabled || 0, d.credentialsTotal || 0);
-    let html = '<div class="replenish-status-line">' + escapeHtml(summary) + '</div>';
+    let html = '<div class="rp-status-line">' + escapeHtml(summary) + '</div>';
     if (d.credentialsAllDisabled) {
-      html += '<div class="replenish-status-line text-danger"><i class="fa-solid fa-triangle-exclamation"></i> '
-        + t('replenish.credentialsAllDisabled') + '</div>';
+      html += '<div class="rp-status-line rp-err">' + escapeHtml(t('replenish.credentialsAllDisabled')) + '</div>';
     }
     box.innerHTML = html;
   }
+
   function collectReplenishPayload() {
     const num = id => { const el = $(id); if (!el) return 0; const v = parseInt((el.value || '').trim(), 10); return isNaN(v) ? 0 : v; };
     const str = id => { const el = $(id); return el ? (el.value || '').trim() : ''; };

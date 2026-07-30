@@ -589,93 +589,123 @@
       </div>
 
       <!-- Replenish (补号) tab -->
+      <!-- Layout uses the self-contained .rp-* system at the end of styles.css.
+           It does not reuse .form-group/.switch: the generic switch paints its
+           track with --input, which is ~1.06:1 against the --muted panel behind
+           a supplier card and was effectively invisible. .rp-toggle always keeps
+           a visible border plus a solid knob. -->
       <div id="tabReplenish" class="tab-content hidden">
-        <!-- Two suppliers run in parallel: each has its own credentials, its own
-             per-push purchase count and its own callback URL. Cards are rendered
-             from the /replenish payload by renderReplenishSuppliers().
-             Field help text lives in title tooltips (.replenish-hint) to keep the
-             tab short; see the replenish section in styles.css. -->
         <div class="card">
-          <div class="card-header">
-            <span class="card-title" data-i18n="replenish.supplierTitle"></span>
-            <div class="replenish-actions">
-              <button class="btn btn-outline btn-sm" id="testReplenishBtn" data-i18n="replenish.test"></button>
-              <button class="btn btn-primary btn-sm" id="saveReplenishBtn" data-i18n="replenish.save"></button>
-            </div>
-          </div>
-          <p class="text-sm muted-text mb-2" data-i18n="replenish.parallelIntro"></p>
-          <div id="replenishSuppliers" class="replenish-suppliers"></div>
-          <div id="replenishTestResult" class="text-sm mt-2"></div>
 
-          <!-- Public base URL is shared by both suppliers: only the path differs. -->
-          <div class="replenish-grid mt-3">
-            <div class="form-group span-2">
-              <label class="replenish-hint" data-i18n="replenish.publicBaseUrl" data-i18n-title="replenish.publicBaseUrlHint"></label>
-              <input type="text" id="replenishPublicBaseUrl" placeholder="https://my-proxy.example.com" autocomplete="off" />
+          <!-- Suppliers: both run in parallel, each with its own credentials,
+               per-push purchase count and callback URL. -->
+          <div class="rp-section">
+            <div class="rp-section-head">
+              <span class="rp-section-title" data-i18n="replenish.supplierTitle"></span>
+              <div class="rp-actions">
+                <button class="btn btn-outline btn-sm" id="testReplenishBtn" data-i18n="replenish.test"></button>
+                <button class="btn btn-primary btn-sm" id="saveReplenishBtn" data-i18n="replenish.save"></button>
+              </div>
             </div>
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.region" data-i18n-title="replenish.regionHint"></label>
-              <input type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
-            </div>
+            <p class="rp-section-note" data-i18n="replenish.parallelIntro"></p>
+            <div id="replenishSuppliers" class="rp-suppliers"></div>
+            <div id="replenishTestResult" class="rp-status mt-2"></div>
           </div>
-        </div>
 
-        <!-- Auto-replenish policy (shared by both suppliers when polling) -->
-        <div class="card">
-          <div class="card-header">
-            <span class="card-title" data-i18n="replenish.autoTitle"></span>
-            <button class="btn btn-primary btn-sm" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
-          </div>
-          <div class="replenish-grid">
-            <div class="form-group">
-              <label class="flex items-center gap-2">
-                <span class="switch"><input type="checkbox" id="replenishEnabled" /><span class="slider"></span></span>
-                <span class="replenish-hint" data-i18n="replenish.enabled" data-i18n-title="replenish.enabledHint"></span>
+          <!-- Shared settings: polling policy plus the public base URL both
+               suppliers' callbacks are built from. -->
+          <div class="rp-section">
+            <div class="rp-section-head">
+              <span class="rp-section-title" data-i18n="replenish.sharedTitle"></span>
+              <button class="btn btn-primary btn-sm" id="saveReplenishPolicyBtn" data-i18n="replenish.save"></button>
+            </div>
+
+            <div class="rp-fields">
+              <div class="rp-field rp-wide">
+                <label class="rp-label" for="replenishPublicBaseUrl">
+                  <span data-i18n="replenish.publicBaseUrl"></span>
+                  <span class="rp-help" data-i18n-title="replenish.publicBaseUrlHint">?</span>
+                </label>
+                <input class="rp-input" type="text" id="replenishPublicBaseUrl"
+                       placeholder="https://my-proxy.example.com" autocomplete="off" />
+              </div>
+
+              <div class="rp-field">
+                <label class="rp-label" for="replenishRegion">
+                  <span data-i18n="replenish.region"></span>
+                  <span class="rp-help" data-i18n-title="replenish.regionHint">?</span>
+                </label>
+                <input class="rp-input" type="text" id="replenishRegion" placeholder="us-east-1" autocomplete="off" />
+              </div>
+              <div class="rp-field">
+                <label class="rp-label" for="replenishMinPoolSize">
+                  <span data-i18n="replenish.minPoolSize"></span>
+                  <span class="rp-help" data-i18n-title="replenish.minPoolSizeHint">?</span>
+                </label>
+                <input class="rp-input" type="number" id="replenishMinPoolSize" min="0" placeholder="3" />
+              </div>
+              <div class="rp-field">
+                <label class="rp-label" for="replenishBatchCount">
+                  <span data-i18n="replenish.batchCount"></span>
+                  <span class="rp-help" data-i18n-title="replenish.batchCountHint">?</span>
+                </label>
+                <input class="rp-input" type="number" id="replenishBatchCount" min="1" placeholder="5" />
+              </div>
+              <div class="rp-field">
+                <label class="rp-label" for="replenishInterval">
+                  <span data-i18n="replenish.interval"></span>
+                  <span class="rp-help" data-i18n-title="replenish.intervalHint">?</span>
+                </label>
+                <input class="rp-input" type="number" id="replenishInterval" min="60" placeholder="300" />
+              </div>
+              <div class="rp-field">
+                <label class="rp-label" for="replenishAllDeadCount">
+                  <span data-i18n="replenish.allDeadCount"></span>
+                  <span class="rp-help" data-i18n-title="replenish.allDeadCountHint">?</span>
+                </label>
+                <input class="rp-input" type="number" id="replenishAllDeadCount" min="0" placeholder="0" />
+              </div>
+            </div>
+
+            <div class="rp-fields mt-3">
+              <label class="rp-row">
+                <span class="rp-toggle">
+                  <input type="checkbox" id="replenishEnabled" />
+                  <span class="rp-toggle-track"></span>
+                </span>
+                <span class="rp-label" data-i18n="replenish.enabled"></span>
+                <span class="rp-help" data-i18n-title="replenish.enabledHint">?</span>
+              </label>
+              <label class="rp-row">
+                <span class="rp-toggle">
+                  <input type="checkbox" id="replenishAllDead" />
+                  <span class="rp-toggle-track"></span>
+                </span>
+                <span class="rp-label" data-i18n="replenish.allDead"></span>
+                <span class="rp-help" data-i18n-title="replenish.allDeadHint">?</span>
               </label>
             </div>
-            <div class="form-group">
-              <label class="flex items-center gap-2">
-                <span class="switch"><input type="checkbox" id="replenishAllDead" /><span class="slider"></span></span>
-                <span class="replenish-hint" data-i18n="replenish.allDead" data-i18n-title="replenish.allDeadHint"></span>
-              </label>
-            </div>
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.minPoolSize" data-i18n-title="replenish.minPoolSizeHint"></label>
-              <input type="number" id="replenishMinPoolSize" min="0" placeholder="3" />
-            </div>
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.batchCount" data-i18n-title="replenish.batchCountHint"></label>
-              <input type="number" id="replenishBatchCount" min="1" placeholder="5" />
-            </div>
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.interval" data-i18n-title="replenish.intervalHint"></label>
-              <input type="number" id="replenishInterval" min="60" placeholder="300" />
-            </div>
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.allDeadCount" data-i18n-title="replenish.allDeadCountHint"></label>
-              <input type="number" id="replenishAllDeadCount" min="0" placeholder="0" />
-            </div>
-          </div>
-          <div id="replenishCredentials" class="text-sm muted-text mt-2"></div>
-        </div>
 
-        <!-- Manual replenish: buys from every enabled supplier at once -->
-        <div class="card">
-          <div class="card-header"><span class="card-title" data-i18n="replenish.manualTitle"></span></div>
-          <div class="replenish-grid">
-            <div class="form-group">
-              <label class="replenish-hint" data-i18n="replenish.manualCount" data-i18n-title="replenish.manualCountHint"></label>
-              <div class="replenish-actions">
-                <input type="number" id="replenishManualCount" min="1" placeholder="5" />
+            <div id="replenishCredentials" class="rp-status mt-2"></div>
+          </div>
+
+          <!-- Manual replenish: buys from every enabled supplier at once. -->
+          <div class="rp-section">
+            <div class="rp-section-head">
+              <span class="rp-section-title" data-i18n="replenish.manualTitle"></span>
+              <div class="rp-actions">
+                <input class="rp-input rp-input-num" type="number" id="replenishManualCount" min="1" placeholder="5"
+                       data-i18n-title="replenish.manualCountHint" />
                 <button class="btn btn-primary btn-sm" id="runReplenishBtn" data-i18n="replenish.runNow"></button>
               </div>
             </div>
-            <div class="form-group">
-              <label class="font-semibold" data-i18n="replenish.lastRunTitle"></label>
-              <div id="replenishLastRun" class="text-sm muted-text"></div>
+            <div id="replenishRunResult" class="rp-status"></div>
+            <div class="rp-field mt-2">
+              <span class="rp-label" data-i18n="replenish.lastRunTitle"></span>
+              <div id="replenishLastRun" class="rp-status"></div>
             </div>
           </div>
-          <div id="replenishRunResult" class="text-sm mt-2"></div>
+
         </div>
       </div>
 

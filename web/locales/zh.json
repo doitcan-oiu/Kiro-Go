@@ -575,6 +575,9 @@
   "logs.persisted": "日志重启后保留",
   "tabs.replenish": "补号",
   "replenish.supplierTitle": "供应商连接",
+  "replenish.apiKey": "密钥",
+  "replenish.callbackUrl": "回调地址",
+  "replenish.sharedTitle": "共用策略",
   "replenish.noProviders": "当前没有可用的补号供应商。下方的策略配置仍会保留，接入新供应商后即可生效。",
   "replenish.allDead": "全部凭证禁用时补号",
   "replenish.allDeadHint": "开启后，每轮检查若系统内所有凭证都已被禁用/封禁，就立即提取一批 Key 导入救活。仅按凭证的禁用/封禁状态判断，临时冷却（如 429）不会触发，避免重复购买。",
@@ -586,7 +589,6 @@
   "replenish.regionHint": "导入 Key 时使用的区域 hint，留空则自动探测。",
   "replenish.save": "保存",
   "replenish.saved": "补号设置已保存",
-  "replenish.autoTitle": "自动补号策略",
   "replenish.enabled": "启用自动补号",
   "replenish.enabledHint": "开启后按下方策略定期检查账号池并自动购买 Key。",
   "replenish.minPoolSize": "低水位阈值",
@@ -628,9 +630,10 @@
   "replenish.balance": "余额",
   "replenish.stock": "库存",
   "replenish.price": "单价",
-  "replenish.manualCount": "每家购买数量",
   "replenish.manualCountHint": "留空则使用下方配置的「每家每次补号数量」。两家会各买这么多。",
   "replenish.runNow": "立即补号（两家）",
   "replenish.runOk": "补号完成：提取 {0}，导入 {1}，跳过 {2}",
-  "replenish.runFailed": "补号失败"
+  "replenish.runFailed": "补号失败",
+  "replenish.stateOn": "运行中",
+  "replenish.stateOff": "已停用"
 }

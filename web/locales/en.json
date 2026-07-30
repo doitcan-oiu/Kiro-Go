@@ -575,6 +575,9 @@
   "logs.persisted": "Logs persist across restart",
   "tabs.replenish": "Replenish",
   "replenish.supplierTitle": "Supplier connection",
+  "replenish.apiKey": "Key",
+  "replenish.callbackUrl": "Callback URL",
+  "replenish.sharedTitle": "Shared policy",
   "replenish.noProviders": "No replenish supplier is available. The policy settings below are kept and will take effect once a supplier is wired up.",
   "replenish.allDead": "Replenish when all credentials are disabled",
   "replenish.allDeadHint": "When on, each check claims a batch of keys if every stored credential is disabled/banned. Keyed on disabled/banned state only — a temporary cooldown (e.g. 429) will not trigger it, avoiding duplicate purchases.",
@@ -586,7 +589,6 @@
   "replenish.regionHint": "Region hint used when importing keys; leave empty to auto-detect.",
   "replenish.save": "Save",
   "replenish.saved": "Replenish settings saved",
-  "replenish.autoTitle": "Auto-replenish policy",
   "replenish.enabled": "Enable auto-replenish",
   "replenish.enabledHint": "When on, periodically checks the pool and buys keys per the policy below.",
   "replenish.minPoolSize": "Low-water threshold",
@@ -628,9 +630,10 @@
   "replenish.balance": "balance",
   "replenish.stock": "stock",
   "replenish.price": "price",
-  "replenish.manualCount": "Keys per supplier",
   "replenish.manualCountHint": "Leave empty to use the per-replenish count below. Each supplier buys this many.",
   "replenish.runNow": "Replenish now (both)",
   "replenish.runOk": "Done: claimed {0}, imported {1}, skipped {2}",
-  "replenish.runFailed": "Replenish failed"
+  "replenish.runFailed": "Replenish failed",
+  "replenish.stateOn": "Active",
+  "replenish.stateOff": "Off"
 }
