@@ -164,12 +164,13 @@ func (c *kiroappClient) Account() (*supplierAccount, error) {
 	return acc, nil
 }
 
-// Claim 提取 count 个 Key。count <= 1 走单个提取（不带请求体），
+// Claim 提取 req.Count 个 Key。count <= 1 走单个提取（不带请求体），
 // 否则带 {"count":N} 批量提取。
 //
-// orderID 被忽略：kiroapp 没有幂等键，重试会重复扣费，因此调用方必须
-// 把一次 Claim 失败当作终态处理，不要重试。
-func (c *kiroappClient) Claim(count int, _ string) (*supplierClaim, error) {
+// req 里的订单号字段全部被忽略：kiroapp 没有幂等键，重试会重复扣费，因此调用方
+// 必须把一次 Claim 失败当作终态处理，不要重试。
+func (c *kiroappClient) Claim(req supplierClaimRequest) (*supplierClaim, error) {
+	count := req.Count
 	if count <= 0 {
 		return nil, errors.New("claim count must be positive")
 	}

@@ -1,13 +1,16 @@
 // Package config — 在线补号（自动补充账号池）相关配置。
 //
 // 补号功能通过对接上游“供应商 API”在线购买 Kiro API Key (ksk_...)，并把它们作为
-// api_key 账号导入本地账号池。目前支持两个供应商，由 Provider 选择：
+// api_key 账号导入本地账号池。目前支持三个供应商，由 Provider 选择：
 //   - ReplenishProviderVendor ("default")：X-API-Key 认证，支持 webhook 推送与
 //     client_order_id 幂等（BaseURL / ApiKey）。
 //   - ReplenishProviderKiroapp ("kiroapp")：kiroapp.cc，Bearer 认证，无 webhook
 //     （KiroappBaseURL / KiroappApiKey）。
+//   - ReplenishProviderKiroappio ("kiroappio")：kiroapp.io，Bearer km_ 令牌，
+//     支持 client_order_id 幂等与 webhook 推送，但回调地址只能在其站点后台手填
+//     （KiroappioBaseURL / KiroappioApiKey）。
 //
-// 两个供应商的连接信息各自独立保存，切换 Provider 不会丢失另一个的密钥。
+// 各供应商的连接信息各自独立保存，切换 Provider 不会丢失其它供应商的密钥。
 //
 // 补号策略分两种触发方式：
 //   - 低水位（MinPoolSize）：可用账号数低于阈值时补号。
@@ -33,10 +36,16 @@ const (
 	// ReplenishProviderKiroapp 是 kiroapp.cc：Bearer 认证，/openapi/claim 提取，
 	// 无 webhook、无幂等订单号，依赖轮询触发。
 	ReplenishProviderKiroapp = "kiroapp"
+	// ReplenishProviderKiroappio 是 kiroapp.io：Bearer km_ 令牌，/api/me/* 前台接口，
+	// purchase 必填 client_order_id（幂等），并支持 webhook 推送。
+	ReplenishProviderKiroappio = "kiroappio"
 )
 
 // DefaultKiroappBaseURL 是 kiroapp.cc 的默认 API 基地址；用户只需填密钥。
 const DefaultKiroappBaseURL = "https://kiroapp.cc"
+
+// DefaultKiroappioBaseURL 是 kiroapp.io 的默认 API 基地址；用户只需填令牌。
+const DefaultKiroappioBaseURL = "http://kiroapp.io"
 
 // ReplenishConfig 保存在线补号的全部配置与最近一次运行的状态。
 type ReplenishConfig struct {
@@ -52,7 +61,11 @@ type ReplenishConfig struct {
 	KiroappBaseURL string `json:"kiroappBaseUrl,omitempty"` // 留空则用 DefaultKiroappBaseURL
 	KiroappApiKey  string `json:"kiroappApiKey,omitempty"`  // 用于 Authorization: Bearer 请求头
 
-	// 导入 Kiro Key 时使用的区域 hint（留空自动探测），两个供应商共用。
+	// 供应商连接信息（Provider = "kiroappio"）
+	KiroappioBaseURL string `json:"kiroappioBaseUrl,omitempty"` // 留空则用 DefaultKiroappioBaseURL
+	KiroappioApiKey  string `json:"kiroappioApiKey,omitempty"`  // km_ 令牌，用于 Authorization: Bearer 请求头
+
+	// 导入 Kiro Key 时使用的区域 hint（留空自动探测），各供应商共用。
 	Region string `json:"region,omitempty"`
 
 	// 自动补号策略
@@ -103,6 +116,8 @@ func NormalizeReplenishProvider(p string) string {
 	switch strings.ToLower(strings.TrimSpace(p)) {
 	case ReplenishProviderKiroapp, "kiroapp.cc":
 		return ReplenishProviderKiroapp
+	case ReplenishProviderKiroappio, "kiroapp.io":
+		return ReplenishProviderKiroappio
 	default:
 		return ReplenishProviderVendor
 	}
@@ -113,30 +128,53 @@ func (rc ReplenishConfig) EffectiveProvider() string {
 	return NormalizeReplenishProvider(rc.Provider)
 }
 
-// SupportsWebhook 报告当前供应商是否支持推送式补号。
+// SupportsWebhook 报告当前供应商是否支持推送式补号（能否接收并据此提取）。
 // kiroapp.cc 没有 webhook 接口，只能靠轮询。
 func (rc ReplenishConfig) SupportsWebhook() bool {
+	switch rc.EffectiveProvider() {
+	case ReplenishProviderVendor, ReplenishProviderKiroappio:
+		return true
+	default:
+		return false
+	}
+}
+
+// SupportsWebhookAutoRegister 报告能否通过 API 把回调地址自动注册给供应商。
+// kiroapp.io 只能在其站点「设置 → Webhook 配置」里手工填写回调地址，
+// 因此面板对它只展示回调地址供复制，不提供「注册回调」按钮。
+func (rc ReplenishConfig) SupportsWebhookAutoRegister() bool {
 	return rc.EffectiveProvider() == ReplenishProviderVendor
 }
 
 // ActiveBaseURL 返回当前供应商的 API 基地址（已去除末尾斜杠）。
-// kiroapp 留空时回落到 DefaultKiroappBaseURL。
+// kiroapp / kiroappio 留空时回落到各自的官方默认地址。
 func (rc ReplenishConfig) ActiveBaseURL() string {
-	if rc.EffectiveProvider() == ReplenishProviderKiroapp {
+	switch rc.EffectiveProvider() {
+	case ReplenishProviderKiroapp:
 		if b := strings.TrimRight(strings.TrimSpace(rc.KiroappBaseURL), "/"); b != "" {
 			return b
 		}
 		return DefaultKiroappBaseURL
+	case ReplenishProviderKiroappio:
+		if b := strings.TrimRight(strings.TrimSpace(rc.KiroappioBaseURL), "/"); b != "" {
+			return b
+		}
+		return DefaultKiroappioBaseURL
+	default:
+		return strings.TrimRight(strings.TrimSpace(rc.BaseURL), "/")
 	}
-	return strings.TrimRight(strings.TrimSpace(rc.BaseURL), "/")
 }
 
 // ActiveApiKey 返回当前供应商的密钥。
 func (rc ReplenishConfig) ActiveApiKey() string {
-	if rc.EffectiveProvider() == ReplenishProviderKiroapp {
+	switch rc.EffectiveProvider() {
+	case ReplenishProviderKiroapp:
 		return strings.TrimSpace(rc.KiroappApiKey)
+	case ReplenishProviderKiroappio:
+		return strings.TrimSpace(rc.KiroappioApiKey)
+	default:
+		return strings.TrimSpace(rc.ApiKey)
 	}
-	return strings.TrimSpace(rc.ApiKey)
 }
 
 // EffectiveAllDeadCount 返回「全部凭证禁用」触发时应提取的 Key 数量。
@@ -177,6 +215,8 @@ func UpdateReplenishSettings(rc ReplenishConfig) error {
 	cfg.Replenish.ApiKey = rc.ApiKey
 	cfg.Replenish.KiroappBaseURL = strings.TrimRight(strings.TrimSpace(rc.KiroappBaseURL), "/")
 	cfg.Replenish.KiroappApiKey = rc.KiroappApiKey
+	cfg.Replenish.KiroappioBaseURL = strings.TrimRight(strings.TrimSpace(rc.KiroappioBaseURL), "/")
+	cfg.Replenish.KiroappioApiKey = rc.KiroappioApiKey
 	cfg.Replenish.Region = rc.Region
 	cfg.Replenish.Enabled = rc.Enabled
 	cfg.Replenish.MinPoolSize = rc.MinPoolSize

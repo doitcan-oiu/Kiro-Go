@@ -2,10 +2,11 @@ package proxy
 
 // 补号的供应商选择与触发策略测试。
 //
-// 覆盖三块：
+// 覆盖四块：
 //  1. newReplenishSupplier 按 Provider 选择正确的客户端。
 //  2. kiroappClient 对 /openapi/* 的请求构造与两种 claim 响应形态的解析。
-//  3. replenishTrigger 的两个触发条件（全部凭证禁用 / 低水位）。
+//  3. kiroappioClient 对 /api/me/* 的请求构造、幂等键与阶梯定价字段的解析。
+//  4. replenishTrigger 的两个触发条件（全部凭证禁用 / 低水位）。
 
 import (
 	"encoding/json"
@@ -55,6 +56,27 @@ func TestNewReplenishSupplierSelectsByProvider(t *testing.T) {
 		{
 			name:    "kiroapp without key errors",
 			rc:      config.ReplenishConfig{Provider: "kiroapp"},
+			wantErr: true,
+		},
+		{
+			name:     "kiroappio",
+			rc:       config.ReplenishConfig{Provider: "kiroappio", KiroappioApiKey: "km_1"},
+			wantName: config.ReplenishProviderKiroappio,
+		},
+		{
+			name:     "kiroapp.io alias",
+			rc:       config.ReplenishConfig{Provider: "kiroapp.io", KiroappioApiKey: "km_1"},
+			wantName: config.ReplenishProviderKiroappio,
+		},
+		{
+			// 三个供应商的密钥互不干扰：只校验当前选中的那个。
+			name:     "kiroappio ignores other providers' credentials",
+			rc:       config.ReplenishConfig{Provider: "kiroappio", KiroappioApiKey: "km_1", KiroappApiKey: "", BaseURL: ""},
+			wantName: config.ReplenishProviderKiroappio,
+		},
+		{
+			name:    "kiroappio without token errors",
+			rc:      config.ReplenishConfig{Provider: "kiroappio"},
 			wantErr: true,
 		},
 		{
@@ -142,7 +164,7 @@ func TestKiroappClaimSingle(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	claim, err := newTestKiroapp(t, srv).Claim(1, "ignored-order-id")
+	claim, err := newTestKiroapp(t, srv).Claim(supplierClaimRequest{Count: 1, ClientOrderID: "ignored-order-id"})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -185,7 +207,7 @@ func TestKiroappClaimBatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	claim, err := newTestKiroapp(t, srv).Claim(2, "")
+	claim, err := newTestKiroapp(t, srv).Claim(supplierClaimRequest{Count: 2})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -205,7 +227,7 @@ func TestKiroappClaimNoKeysIsError(t *testing.T) {
 	defer srv.Close()
 
 	// 出 0 个 Key 必须报错，否则会被当成一次成功的空补号而不被察觉。
-	if _, err := newTestKiroapp(t, srv).Claim(3, ""); err == nil {
+	if _, err := newTestKiroapp(t, srv).Claim(supplierClaimRequest{Count: 3}); err == nil {
 		t.Fatal("expected error when claim returns no keys")
 	}
 }
@@ -216,7 +238,7 @@ func TestKiroappClaimRejectsNonPositiveCount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestKiroapp(t, srv).Claim(0, ""); err == nil {
+	if _, err := newTestKiroapp(t, srv).Claim(supplierClaimRequest{Count: 0}); err == nil {
 		t.Fatal("expected error for count=0")
 	}
 }
@@ -273,6 +295,241 @@ func TestKiroappErrorResponseSurfacesMessage(t *testing.T) {
 	// 上游原因要透传出来，否则面板只能显示一个裸状态码。
 	if !strings.Contains(err.Error(), "insufficient balance") {
 		t.Errorf("error %q should contain the upstream message", err)
+	}
+}
+
+// --- kiroapp.io 客户端 ---
+
+// newTestKiroappio 指向一个测试服务器，绕过供应商配置。config.Init 的理由同上。
+func newTestKiroappio(t *testing.T, srv *httptest.Server) *kiroappioClient {
+	t.Helper()
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	return &kiroappioClient{baseURL: srv.URL, apiKey: "km_test"}
+}
+
+func TestKiroappioDefaultBaseURL(t *testing.T) {
+	c, err := newKiroappioClient(config.ReplenishConfig{Provider: "kiroappio", KiroappioApiKey: "km_1"})
+	if err != nil {
+		t.Fatalf("newKiroappioClient: %v", err)
+	}
+	if c.baseURL != config.DefaultKiroappioBaseURL {
+		t.Errorf("baseURL = %q, want %q", c.baseURL, config.DefaultKiroappioBaseURL)
+	}
+
+	c2, err := newKiroappioClient(config.ReplenishConfig{
+		Provider:         "kiroappio",
+		KiroappioBaseURL: "https://mirror.example.com/",
+		KiroappioApiKey:  "km_1",
+	})
+	if err != nil {
+		t.Fatalf("newKiroappioClient: %v", err)
+	}
+	if c2.baseURL != "https://mirror.example.com" {
+		t.Errorf("baseURL = %q, want trailing slash trimmed", c2.baseURL)
+	}
+}
+
+func TestKiroappioClaimSendsIdempotencyKey(t *testing.T) {
+	var gotAuth, gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/me/profile" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"user": map[string]interface{}{"name": "alice", "balance": 1870},
+			})
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"purchased":   2,
+			"requested":   2,
+			"remaining":   115,
+			"unit_price":  38,
+			"total_debit": 76,
+			"order_id":    "batch-xyz",
+			"keys": []map[string]interface{}{
+				{"key": "sk-aaa", "price": 30},
+				{"key": " ", "price": 0},
+				{"key": "sk-bbb", "price": 46},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	claim, err := newTestKiroappio(t, srv).Claim(supplierClaimRequest{Count: 2})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if gotAuth != "Bearer km_test" {
+		t.Errorf("Authorization = %q, want Bearer km_test", gotAuth)
+	}
+	if gotPath != "/api/me/purchase" {
+		t.Errorf("path = %q, want /api/me/purchase", gotPath)
+	}
+	if got, ok := gotBody["count"].(float64); !ok || int(got) != 2 {
+		t.Errorf("body count = %v, want 2", gotBody["count"])
+	}
+	// client_order_id 必填且必须是 32 位十六进制，否则供应商拒收。
+	orderID, _ := gotBody["client_order_id"].(string)
+	if len(orderID) != 32 {
+		t.Errorf("client_order_id = %q, want 32 hex chars", orderID)
+	}
+	// 未指定批次时不应带 order_id，否则会被限制到某个不存在的批次。
+	if _, ok := gotBody["order_id"]; ok {
+		t.Error("order_id must be omitted when no batch is requested")
+	}
+
+	// 空白 key 应被丢弃。
+	if len(claim.Keys) != 2 || claim.Keys[0] != "sk-aaa" || claim.Keys[1] != "sk-bbb" {
+		t.Errorf("Keys = %v, want [sk-aaa sk-bbb]", claim.Keys)
+	}
+	// 计费以 total_debit 为准，而不是 count × unit_price。
+	if claim.Spent != 76 {
+		t.Errorf("Spent = %v, want 76 (total_debit)", claim.Spent)
+	}
+	if claim.PurchasedCount() != 2 {
+		t.Errorf("PurchasedCount() = %d, want 2", claim.PurchasedCount())
+	}
+	// purchase 响应的 remaining 是剩余库存，余额须来自 profile。
+	if claim.Remaining != 1870 {
+		t.Errorf("Remaining = %v, want 1870 (balance, not stock)", claim.Remaining)
+	}
+	// 回传的是我方幂等键，重试时要复用它。
+	if claim.OrderID != orderID {
+		t.Errorf("OrderID = %q, want the client_order_id %q", claim.OrderID, orderID)
+	}
+}
+
+func TestKiroappioClaimReusesGivenOrderIDs(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/me/profile" {
+			json.NewEncoder(w).Encode(map[string]interface{}{"user": map[string]interface{}{}})
+			return
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"purchased": 1,
+			"keys":      []map[string]interface{}{{"key": "sk-a"}},
+		})
+	}))
+	defer srv.Close()
+
+	// 推送式补号：webhook 载荷里的两个 id 都要原样带上。
+	_, err := newTestKiroappio(t, srv).Claim(supplierClaimRequest{
+		Count:         1,
+		ClientOrderID: "d5c4fd9460b70fb8e944bd7faa519896",
+		BatchOrderID:  "0d9f-batch",
+	})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if got := gotBody["client_order_id"]; got != "d5c4fd9460b70fb8e944bd7faa519896" {
+		t.Errorf("client_order_id = %v, want the supplied idempotency key", got)
+	}
+	if got := gotBody["order_id"]; got != "0d9f-batch" {
+		t.Errorf("order_id = %v, want the supplied batch id", got)
+	}
+}
+
+func TestKiroappioClaimNoKeysIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{"purchased": 0, "keys": []interface{}{}})
+	}))
+	defer srv.Close()
+
+	if _, err := newTestKiroappio(t, srv).Claim(supplierClaimRequest{Count: 3}); err == nil {
+		t.Fatal("expected error when purchase returns no keys")
+	}
+}
+
+func TestKiroappioStockAndAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me/stock":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"stock": 120, "price": 30, "price_min": 30, "price_max": 65, "balance": 2060,
+			})
+		case "/api/me/profile":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"user": map[string]interface{}{"name": "alice", "balance": 2060},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	c := newTestKiroappio(t, srv)
+
+	stock, err := c.Stock()
+	if err != nil {
+		t.Fatalf("Stock: %v", err)
+	}
+	if stock != 120 {
+		t.Errorf("Stock() = %d, want 120", stock)
+	}
+
+	acc, err := c.Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if acc.Name != "alice" || acc.Remaining != 2060 {
+		t.Errorf("Account() = %+v, want name=alice remaining=2060", acc)
+	}
+	// 阶梯定价：下限取 price_min，上限只在确有区间时给出。
+	if !acc.HasPrice || acc.KeyPrice != 30 {
+		t.Errorf("KeyPrice = %v (has=%v), want 30", acc.KeyPrice, acc.HasPrice)
+	}
+	if acc.PriceMax != 65 {
+		t.Errorf("PriceMax = %v, want 65", acc.PriceMax)
+	}
+	// kiroapp.io 不提供配额概念。
+	if acc.HasQuota {
+		t.Error("HasQuota = true, want false for kiroappio")
+	}
+}
+
+func TestKiroappioFlatPriceOmitsRange(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/me/stock":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"stock": 5, "price": 30, "price_min": 30, "price_max": 30,
+			})
+		default:
+			json.NewEncoder(w).Encode(map[string]interface{}{"user": map[string]interface{}{"balance": 10}})
+		}
+	}))
+	defer srv.Close()
+
+	acc, err := newTestKiroappio(t, srv).Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	// 单一价位时不该报出 "30~30" 这样的伪区间。
+	if acc.PriceMax != 0 {
+		t.Errorf("PriceMax = %v, want 0 when price_max == price_min", acc.PriceMax)
+	}
+}
+
+func TestKiroappioErrorResponseSurfacesMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "token expired"})
+	}))
+	defer srv.Close()
+
+	_, err := newTestKiroappio(t, srv).Stock()
+	if err == nil {
+		t.Fatal("expected error on HTTP 401")
+	}
+	if !strings.Contains(err.Error(), "token expired") {
+		t.Errorf("error %q should contain the upstream reason", err)
 	}
 }
 
@@ -435,6 +692,7 @@ func TestReplenishConfigActiveConnection(t *testing.T) {
 	rc := config.ReplenishConfig{
 		BaseURL: "https://vendor.example.com", ApiKey: "usr-x",
 		KiroappBaseURL: "", KiroappApiKey: "k-1",
+		KiroappioBaseURL: "", KiroappioApiKey: "km_1",
 	}
 
 	// 默认（空 Provider）走 vendor。
@@ -446,6 +704,10 @@ func TestReplenishConfigActiveConnection(t *testing.T) {
 	}
 	if !rc.SupportsWebhook() {
 		t.Error("vendor should support webhook")
+	}
+	// 只有 vendor 能通过 API 自动注册回调。
+	if !rc.SupportsWebhookAutoRegister() {
+		t.Error("vendor should support webhook auto-register")
 	}
 
 	// 切到 kiroapp 后连接信息应整体切换，且 vendor 的密钥仍保留在配置里。
@@ -459,7 +721,24 @@ func TestReplenishConfigActiveConnection(t *testing.T) {
 	if rc.SupportsWebhook() {
 		t.Error("kiroapp must not report webhook support")
 	}
-	if rc.ApiKey != "usr-x" {
-		t.Error("switching provider must not clear the other provider's key")
+
+	// kiroapp.io 能收推送，但回调地址只能在其站点后台手填。
+	rc.Provider = "kiroappio"
+	if got := rc.ActiveBaseURL(); got != config.DefaultKiroappioBaseURL {
+		t.Errorf("kiroappio ActiveBaseURL() = %q, want default", got)
+	}
+	if got := rc.ActiveApiKey(); got != "km_1" {
+		t.Errorf("kiroappio ActiveApiKey() = %q", got)
+	}
+	if !rc.SupportsWebhook() {
+		t.Error("kiroappio should support webhook (inbound push)")
+	}
+	if rc.SupportsWebhookAutoRegister() {
+		t.Error("kiroappio has no register API; must not claim auto-register")
+	}
+
+	// 三个供应商的凭证互不覆盖。
+	if rc.ApiKey != "usr-x" || rc.KiroappApiKey != "k-1" {
+		t.Error("switching provider must not clear the other providers' keys")
 	}
 }

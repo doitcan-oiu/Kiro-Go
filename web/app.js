@@ -3037,6 +3037,12 @@
         kKeyEl.value = '';
         kKeyEl.placeholder = d.hasKiroappApiKey ? (d.kiroappApiKeyMasked || '••••••') : t('replenish.kiroappApiKeyPlaceholder');
       }
+      setVal('replenishKiroappioBaseUrl', d.kiroappioBaseUrl || '');
+      const ioKeyEl = $('replenishKiroappioApiKey');
+      if (ioKeyEl) {
+        ioKeyEl.value = '';
+        ioKeyEl.placeholder = d.hasKiroappioApiKey ? (d.kiroappioApiKeyMasked || '••••••') : t('replenish.kiroappioApiKeyPlaceholder');
+      }
       setVal('replenishRegion', d.region || '');
       setChk('replenishEnabled', d.enabled);
       setVal('replenishMinPoolSize', d.minPoolSize != null ? d.minPoolSize : 0);
@@ -3071,16 +3077,27 @@
     }
     box.innerHTML = html;
   }
-  // 按当前选中的供应商切换连接字段，并隐藏不适用的推送式补号卡片
-  // （kiroapp.cc 没有 webhook 接口，只能靠轮询）。
+  // 各供应商的能力表，与后端 config.SupportsWebhook / SupportsWebhookAutoRegister
+  // 保持一致。放在前端是为了切换下拉框时立即反映，无需等一次 GET。
+  const REPLENISH_PROVIDERS = {
+    'default':   { fields: 'replenishVendorFields',    webhook: true,  autoRegister: true },
+    'kiroapp':   { fields: 'replenishKiroappFields',   webhook: false, autoRegister: false },
+    'kiroappio': { fields: 'replenishKiroappioFields', webhook: true,  autoRegister: false }
+  };
+  // 按当前选中的供应商切换连接字段与推送式补号卡片的可见性：
+  // kiroapp.cc 没有 webhook 接口（整卡隐藏）；kiroapp.io 有推送但回调地址只能在其
+  // 站点后台手填，因此隐藏「注册回调」按钮，改为展示地址供复制。
   function updateReplenishProviderUI() {
     const provider = ($('replenishProvider') || {}).value || 'default';
-    const isKiroapp = provider === 'kiroapp';
+    const caps = REPLENISH_PROVIDERS[provider] || REPLENISH_PROVIDERS['default'];
     const toggle = (id, show) => { const el = $(id); if (el) el.classList.toggle('hidden', !show); };
-    toggle('replenishVendorFields', !isKiroapp);
-    toggle('replenishKiroappFields', isKiroapp);
-    // 只有 vendor 支持推送式补号。
-    toggle('replenishWebhookCard', !isKiroapp);
+    Object.keys(REPLENISH_PROVIDERS).forEach(p => {
+      toggle(REPLENISH_PROVIDERS[p].fields, p === provider);
+    });
+    toggle('replenishWebhookCard', caps.webhook);
+    // 自动注册按钮 vs 手工填写说明，二者互斥。
+    toggle('replenishAutoRegisterRow', caps.autoRegister);
+    toggle('replenishManualRegisterHint', caps.webhook && !caps.autoRegister);
   }
   // 展示凭证健康度，让用户知道「全部凭证禁用」触发条件当前是否成立。
   function renderReplenishCredentials(d) {
@@ -3103,6 +3120,7 @@
       provider: ($('replenishProvider') || {}).value || 'default',
       baseUrl: str('replenishBaseUrl'),
       kiroappBaseUrl: str('replenishKiroappBaseUrl'),
+      kiroappioBaseUrl: str('replenishKiroappioBaseUrl'),
       region: str('replenishRegion'),
       enabled: chk('replenishEnabled'),
       minPoolSize: num('replenishMinPoolSize'),
@@ -3118,6 +3136,8 @@
     if (key) payload.apiKey = key;
     const kKey = str('replenishKiroappApiKey');
     if (kKey) payload.kiroappApiKey = kKey;
+    const ioKey = str('replenishKiroappioApiKey');
+    if (ioKey) payload.kiroappioApiKey = ioKey;
     return payload;
   }
   function renderReplenishWebhookStatus(d) {
@@ -3188,12 +3208,21 @@
       const res = await api('/replenish/test', { method: 'POST' });
       const d = await res.json();
       if (d.success) {
-        // 供应商字段覆盖度不同：vendor 有账户名，kiroapp 只有余额/单价。
+        // 供应商字段覆盖度不同：vendor 有账户名与配额，kiroapp.cc 只有余额/单价，
+        // kiroapp.io 有账户名 + 阶梯价区间。
         const stock = d.stock != null ? d.stock : '-';
-        const msg = d.name
-          ? t('replenish.testOk', d.name, formatNumber(d.remaining), stock)
-          : t('replenish.testOkKiroapp', formatNumber(d.remaining), stock,
-              d.keyPrice != null ? formatNumber(d.keyPrice) : '-');
+        let msg;
+        if (d.provider === 'kiroappio') {
+          const price = d.priceMax != null && d.priceMax !== d.priceMin
+            ? formatNumber(d.priceMin) + '~' + formatNumber(d.priceMax)
+            : (d.priceMin != null ? formatNumber(d.priceMin) : '-');
+          msg = t('replenish.testOkKiroappio', d.name || '-', formatNumber(d.remaining), stock, price);
+        } else if (d.name) {
+          msg = t('replenish.testOk', d.name, formatNumber(d.remaining), stock);
+        } else {
+          msg = t('replenish.testOkKiroapp', formatNumber(d.remaining), stock,
+            d.keyPrice != null ? formatNumber(d.keyPrice) : '-');
+        }
         toastPrimary(msg, { duration: 6000 });
       } else {
         toastError(t('replenish.testFailed') + ': ' + (d.error || ''));

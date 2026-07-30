@@ -49,6 +49,11 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 		"kiroappBaseUrlHint":  config.DefaultKiroappBaseURL,
 		"kiroappApiKeyMasked": config.MaskApiKey(rc.KiroappApiKey),
 		"hasKiroappApiKey":    rc.KiroappApiKey != "",
+		// kiroapp.io 供应商连接信息
+		"kiroappioBaseUrl":      rc.KiroappioBaseURL,
+		"kiroappioBaseUrlHint":  config.DefaultKiroappioBaseURL,
+		"kiroappioApiKeyMasked": config.MaskApiKey(rc.KiroappioApiKey),
+		"hasKiroappioApiKey":    rc.KiroappioApiKey != "",
 		// 策略
 		"region":           rc.Region,
 		"enabled":          rc.Enabled,
@@ -57,9 +62,10 @@ func (h *Handler) apiGetReplenish(w http.ResponseWriter, r *http.Request) {
 		"intervalSeconds":  rc.IntervalSeconds,
 		"allDeadReplenish": rc.AllDeadReplenish,
 		"allDeadCount":     rc.AllDeadCount,
-		// 推送式补号（仅 vendor 支持）
-		"supportsWebhook": rc.SupportsWebhook(),
-		"webhookMaxCount": rc.WebhookMaxCount,
+		// 推送式补号（vendor 与 kiroapp.io 支持；只有 vendor 能自动注册回调）
+		"supportsWebhook":             rc.SupportsWebhook(),
+		"supportsWebhookAutoRegister": rc.SupportsWebhookAutoRegister(),
+		"webhookMaxCount":             rc.WebhookMaxCount,
 		"publicBaseUrl":   rc.PublicBaseURL,
 		"webhookUrl":      webhookURL,
 		"hasSecret":       rc.WebhookSecret != "",
@@ -85,6 +91,8 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 		ApiKey           *string `json:"apiKey,omitempty"`
 		KiroappBaseURL   *string `json:"kiroappBaseUrl,omitempty"`
 		KiroappApiKey    *string `json:"kiroappApiKey,omitempty"`
+		KiroappioBaseURL *string `json:"kiroappioBaseUrl,omitempty"`
+		KiroappioApiKey  *string `json:"kiroappioApiKey,omitempty"`
 		Region           *string `json:"region,omitempty"`
 		Enabled          *bool   `json:"enabled,omitempty"`
 		MinPoolSize      *int    `json:"minPoolSize,omitempty"`
@@ -119,6 +127,12 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	if req.KiroappApiKey != nil && *req.KiroappApiKey != "" {
 		rc.KiroappApiKey = *req.KiroappApiKey
 	}
+	if req.KiroappioBaseURL != nil {
+		rc.KiroappioBaseURL = *req.KiroappioBaseURL
+	}
+	if req.KiroappioApiKey != nil && *req.KiroappioApiKey != "" {
+		rc.KiroappioApiKey = *req.KiroappioApiKey
+	}
 	if req.Region != nil {
 		rc.Region = *req.Region
 	}
@@ -151,6 +165,14 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
+	}
+
+	// 需要手工注册回调的供应商（kiroapp.io 只能在其站点后台填地址）没有「注册回调」
+	// 按钮去顺带生成密钥，因此一配好公网地址就把密钥备好，GET 才有完整回调地址可复制。
+	if rc.SupportsWebhook() && !rc.SupportsWebhookAutoRegister() && strings.TrimSpace(rc.PublicBaseURL) != "" {
+		if _, err := config.GetOrCreateReplenishWebhookSecret(); err != nil {
+			logger.Warnf("[Replenish] generate webhook secret failed: %v", err)
+		}
 	}
 
 	// 配置变更后重启后台循环，使新的 enabled/interval 立即生效。
@@ -191,6 +213,11 @@ func (h *Handler) apiTestReplenish(w http.ResponseWriter, r *http.Request) {
 	}
 	if acc.HasPrice {
 		resp["keyPrice"] = acc.KeyPrice
+		resp["priceMin"] = acc.KeyPrice
+		// 阶梯定价的供应商还给出上限，前端据此展示价格区间。
+		if acc.PriceMax > 0 {
+			resp["priceMax"] = acc.PriceMax
+		}
 	}
 	// 库存查询失败不致命，作为附加信息返回。
 	if stock, stockErr := client.Stock(); stockErr == nil {
@@ -235,11 +262,12 @@ func (h *Handler) apiRunReplenish(w http.ResponseWriter, r *http.Request) {
 // 需先保存公网基地址（PublicBaseURL）。
 func (h *Handler) apiRegisterReplenishWebhook(w http.ResponseWriter, r *http.Request) {
 	rc := config.GetReplenishConfig()
-	// 只有 vendor 供应商有 webhook 接口；kiroapp 只能靠轮询。
-	if !rc.SupportsWebhook() {
+	// 只有 vendor 有注册回调的接口：kiroapp 无 webhook；kiroapp.io 有 webhook
+	// 但回调地址只能在其站点后台手填，没有可调用的注册接口。
+	if !rc.SupportsWebhookAutoRegister() {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "current provider does not support webhook push; use polling instead",
+			"error": "current provider has no webhook registration API; configure the callback URL on the supplier's site",
 		})
 		return
 	}

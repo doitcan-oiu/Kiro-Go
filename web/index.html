@@ -598,6 +598,7 @@
             <select id="replenishProvider">
               <option value="default" data-i18n="replenish.providerVendor"></option>
               <option value="kiroapp" data-i18n="replenish.providerKiroapp"></option>
+              <option value="kiroappio" data-i18n="replenish.providerKiroappio"></option>
             </select>
             <small data-i18n="replenish.providerHint"></small>
           </div>
@@ -627,6 +628,20 @@
               <label data-i18n="replenish.kiroappApiKey"></label>
               <input type="password" id="replenishKiroappApiKey" data-i18n-placeholder="replenish.kiroappApiKeyPlaceholder" autocomplete="new-password" />
               <small data-i18n="replenish.kiroappApiKeyHint"></small>
+            </div>
+          </div>
+
+          <!-- Provider = kiroapp.io connection fields -->
+          <div id="replenishKiroappioFields" class="hidden">
+            <div class="form-group">
+              <label data-i18n="replenish.kiroappioBaseUrl"></label>
+              <input type="text" id="replenishKiroappioBaseUrl" placeholder="http://kiroapp.io" autocomplete="off" />
+              <small data-i18n="replenish.kiroappioBaseUrlHint"></small>
+            </div>
+            <div class="form-group">
+              <label data-i18n="replenish.kiroappioApiKey"></label>
+              <input type="password" id="replenishKiroappioApiKey" data-i18n-placeholder="replenish.kiroappioApiKeyPlaceholder" autocomplete="new-password" />
+              <small data-i18n="replenish.kiroappioApiKeyHint"></small>
             </div>
           </div>
 
@@ -693,6 +708,9 @@
         <div class="card" id="replenishWebhookCard">
           <div class="card-header"><span class="card-title" data-i18n="replenish.webhookTitle"></span></div>
           <p class="text-sm muted-text mb-2" data-i18n="replenish.webhookIntro"></p>
+          <!-- Shown for providers whose callback URL must be pasted into their own
+               dashboard (kiroapp.io has no register API). -->
+          <p class="text-sm muted-text mb-2 hidden" id="replenishManualRegisterHint" data-i18n="replenish.manualRegisterHint"></p>
           <div class="form-group">
             <label data-i18n="replenish.webhookMaxCount"></label>
             <input type="number" id="replenishWebhookMaxCount" min="0" placeholder="0" />
@@ -713,7 +731,11 @@
           </div>
           <div class="flex gap-2">
             <button class="btn btn-primary" id="saveReplenishWebhookBtn" data-i18n="replenish.save"></button>
-            <button class="btn btn-outline" id="registerReplenishWebhookBtn" data-i18n="replenish.register"></button>
+            <!-- Only providers with a register API get this button; kiroapp.io needs
+                 the callback URL pasted into its own dashboard instead. -->
+            <span id="replenishAutoRegisterRow" class="flex gap-2">
+              <button class="btn btn-outline" id="registerReplenishWebhookBtn" data-i18n="replenish.register"></button>
+            </span>
             <button class="btn btn-outline" id="resetReplenishSecretBtn" data-i18n="replenish.resetSecret"></button>
           </div>
           <div class="form-group mt-3">
