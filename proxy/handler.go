@@ -61,6 +61,9 @@ type Handler struct {
 	modelsCacheMu   sync.RWMutex
 	modelsCacheTime int64
 	promptCache     *promptCacheTracker
+	// promptCachePath 是 prompt 缓存状态文件路径。存在 Handler 上而非仅作局部变量，
+	// 是为了让「关闭缓存」的管理接口能连带清掉磁盘状态。
+	promptCachePath string
 	tokenRefreshMu  sync.Mutex
 	// 请求日志 (环形缓冲区，包含成功和失败)
 	requestLogs   []RequestLog
@@ -254,6 +257,7 @@ func NewHandler() *Handler {
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
 	}
 	cachePath := filepath.Join(config.GetConfigDir(), "prompt_cache.json")
+	h.promptCachePath = cachePath
 	// A4: seed the in-memory ring from durable log storage so logs survive
 	// restart. LoadRecentLogs returns oldest-first (file order), which matches
 	// the ring's append semantics (oldest at index 0, newest at the tail) — so
@@ -3892,6 +3896,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"rateLimitPerKeyRpm":    config.GetRateLimitPerKey(),
 		"rateLimitBurstSeconds": config.GetRateLimitBurst(),
 		"webhookUrl":            config.GetWebhookURL(),
+		"promptCacheEnabled":    config.GetPromptCacheEnabled(),
 	})
 }
 
@@ -3949,6 +3954,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		RateLimitPerKeyRPM    *float64 `json:"rateLimitPerKeyRpm,omitempty"`
 		RateLimitBurstSeconds *float64 `json:"rateLimitBurstSeconds,omitempty"`
 		WebhookURL            *string  `json:"webhookUrl,omitempty"`
+		PromptCacheEnabled    *bool    `json:"promptCacheEnabled,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -4008,6 +4014,23 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
+		}
+	}
+
+	// 缓存读写总开关。关闭时同时清空内存条目与磁盘状态：停用后 /status 的 cache
+	// 统计应显示 0，且重新开启不会读回停用前的旧指纹（那会凭空产生命中）。
+	if req.PromptCacheEnabled != nil {
+		was := config.GetPromptCacheEnabled()
+		if err := config.UpdatePromptCacheEnabled(*req.PromptCacheEnabled); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if was && !*req.PromptCacheEnabled {
+			h.promptCache.Reset(h.promptCachePath)
+			logger.Infof("[PromptCache] disabled; in-memory and on-disk state cleared")
+		} else if !was && *req.PromptCacheEnabled {
+			logger.Infof("[PromptCache] enabled")
 		}
 	}
 

@@ -91,6 +91,8 @@
   "settings.usageSettings": "Usage Control",
   "settings.allowOverUsage": "Allow Over-Usage",
   "settings.allowOverUsageHint": "When enabled, accounts will continue to serve requests even after their quota is exhausted",
+  "settings.promptCacheEnabled": "Enable cache read/write accounting",
+  "settings.promptCacheEnabledHint": "This proxy simulates prompt-cache hits locally and reports cache_read / cache_creation token counts from that simulation (upstream does not provide them). When off, nothing is simulated: both fields stay 0 and the in-memory plus on-disk cache state is cleared. On by default.",
   "settings.saveUsage": "Save Usage Changes",
   "settings.overUsageSaved": "Over-usage settings saved",
   "settings.thinkingSettings": "Thinking Mode Settings",

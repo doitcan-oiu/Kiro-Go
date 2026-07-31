@@ -113,6 +113,12 @@ type promptCacheEntryOnDisk struct {
 // time load finishes) are dropped. Best-effort: a corrupt/missing file is not
 // fatal — the tracker starts empty, same as the pre-C3 behavior.
 func (t *promptCacheTracker) Load(path string) {
+	// 总开关关闭：不读回磁盘状态。否则「关掉缓存」后重启，内存里又会有一批
+	// 旧指纹，一旦重新开启就报出并非本次会话产生的命中。
+	if !config.GetPromptCacheEnabled() {
+		return
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return // missing file = fresh start (normal on first run)
@@ -156,6 +162,37 @@ func (t *promptCacheTracker) startSaveLoop(path string, flushInterval time.Durat
 	}()
 }
 
+// Reset 清空全部内存条目与计数器，并删除磁盘上的状态文件。
+//
+// 关闭总开关时调用，两个目的：
+//  1. 停用后 Stats() 应显示 0，而不是保留停用前的命中数——否则面板上会出现
+//     「已关闭但仍有命中」的自相矛盾状态。
+//  2. 磁盘状态必须一并清除。关闭期间 flush 是跳过的，只置脏并不会写盘，
+//     重新开启后就会 Load 回一批陈旧指纹，凭空产生命中。所以这里直接删文件。
+//
+// path 为空表示未启用持久化，只清内存。
+func (t *promptCacheTracker) Reset(path string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.entries = make(map[[32]byte]*promptCacheEntry)
+	t.order = list.New()
+	// 已清空且磁盘文件即将删除，没有待写内容。
+	t.dirty = false
+	t.mu.Unlock()
+
+	atomic.StoreInt64(&t.hits, 0)
+	atomic.StoreInt64(&t.misses, 0)
+	atomic.StoreInt64(&t.evictions, 0)
+	atomic.StoreInt64(&t.expirations, 0)
+
+	if path != "" {
+		// 不存在也算成功，不需要区分。
+		_ = os.Remove(path)
+	}
+}
+
 func (t *promptCacheTracker) Stop() {
 	// Idempotent: a second Stop (e.g. test cleanup + main shutdown) would
 	// otherwise close an already-closed channel and panic.
@@ -166,7 +203,13 @@ func (t *promptCacheTracker) Stop() {
 	})
 }
 
+// flush 把当前条目写盘。总开关关闭时跳过：停用后不应继续刷新磁盘状态，
+// 否则重新开启时会读回一份陈旧的命中数据。
 func (t *promptCacheTracker) flush(path string) {
+	if !config.GetPromptCacheEnabled() {
+		return
+	}
+
 	t.mu.Lock()
 	if !t.dirty {
 		t.mu.Unlock()
@@ -314,6 +357,12 @@ func detectMaxTTL(req *ClaudeRequest) time.Duration {
 }
 
 func (t *promptCacheTracker) BuildClaudeProfile(req *ClaudeRequest, totalInputTokens int) *promptCacheProfile {
+	// 总开关关闭：返回 nil 即可关停整条链路。Compute/Update 对 nil profile 已有
+	// 提前返回，因此无需在每个调用点各加一次判断，也不会再写入任何内存条目。
+	if !config.GetPromptCacheEnabled() {
+		return nil
+	}
+
 	blocks := flattenClaudeCacheBlocks(req)
 	if len(blocks) == 0 {
 		return nil

@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/sha256"
 	"kiro-go/config"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -724,5 +725,139 @@ func TestCacheStats(t *testing.T) {
 	}
 	if stats.Entries != 3 {
 		t.Errorf("entries = %d, want 3", stats.Entries)
+	}
+}
+
+// --- 缓存读写总开关 ---
+
+// newCacheSwitchTestRequest 构造一个足以产生缓存断点的请求。
+// system 块要够长：低于模型的最小可缓存 token 数会被跳过，测出来就永远是 0 命中。
+func newCacheSwitchTestRequest() *ClaudeRequest {
+	longSystem := strings.Repeat("You are a helpful coding assistant with deep knowledge of Go, Rust, Python, and TypeScript. ", 80)
+	return &ClaudeRequest{
+		Model: "claude-sonnet-4.5",
+		System: []interface{}{
+			map[string]interface{}{
+				"type": "text",
+				"text": longSystem,
+				"cache_control": map[string]interface{}{
+					"type": "ephemeral",
+				},
+			},
+		},
+		Messages: []ClaudeMessage{{Role: "user", Content: "hello world"}},
+	}
+}
+
+// 关掉总开关后，整条链路都不得再产生缓存计数。
+//
+// 只在 BuildClaudeProfile 一处短路：它返回 nil，而 Compute/Update 对 nil profile
+// 已有提前返回，所以无需在每个调用点各加判断。这个用例锁住该契约。
+func TestPromptCacheDisabledYieldsNoAccounting(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	tracker := newPromptCacheTracker(time.Hour)
+	req := newCacheSwitchTestRequest()
+
+	// 默认（未设置该字段）必须是开启的：升级用户不应被静默关掉。
+	if !config.GetPromptCacheEnabled() {
+		t.Fatal("prompt cache must default to enabled")
+	}
+	if tracker.BuildClaudeProfile(req, 120) == nil {
+		t.Fatal("expected a profile while enabled")
+	}
+
+	if err := config.UpdatePromptCacheEnabled(false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+
+	profile := tracker.BuildClaudeProfile(req, 120)
+	if profile != nil {
+		t.Fatalf("expected nil profile while disabled, got %+v", profile)
+	}
+	// nil profile 必须让后两步都成为空操作。
+	if u := tracker.Compute("acct-1", profile); u != (promptCacheUsage{}) {
+		t.Errorf("Compute with disabled cache = %+v, want zero usage", u)
+	}
+	tracker.Update("acct-1", profile)
+	if got := len(tracker.entries); got != 0 {
+		t.Errorf("entries = %d, want 0 (nothing may be stored while disabled)", got)
+	}
+
+	// 重新开启后应恢复工作，而不是需要重启进程。
+	if err := config.UpdatePromptCacheEnabled(true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if tracker.BuildClaudeProfile(req, 120) == nil {
+		t.Fatal("expected profile again after re-enabling")
+	}
+}
+
+// 关闭开关时必须清空内存与磁盘状态。
+//
+// 若留着旧指纹，重新开启的第一个请求会凭空命中——面板上会显示一个「刚开启就有
+// 高命中率」的假象，且 /status 在关闭期间仍显示停用前的命中数，自相矛盾。
+func TestPromptCacheResetClearsStateAndFile(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	dir := t.TempDir()
+	path := dir + "/prompt_cache.json"
+
+	tracker := newPromptCacheTracker(time.Hour)
+	req := newCacheSwitchTestRequest()
+	profile := tracker.BuildClaudeProfile(req, 120)
+	if profile == nil {
+		t.Fatal("expected a profile")
+	}
+	tracker.Compute("acct-1", profile)
+	tracker.Update("acct-1", profile)
+	if len(tracker.entries) == 0 {
+		t.Fatal("expected stored entries before reset")
+	}
+	// 落盘，确认 Reset 会把文件也清掉。
+	tracker.flush(path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected state file on disk: %v", err)
+	}
+
+	tracker.Reset(path)
+
+	if got := len(tracker.entries); got != 0 {
+		t.Errorf("entries after Reset = %d, want 0", got)
+	}
+	if st := tracker.Stats(); st.Hits != 0 || st.Misses != 0 {
+		t.Errorf("stats after Reset = %+v, want zeroed counters", st)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("state file still present after Reset (err=%v)", err)
+	}
+}
+
+// 关闭状态下启动不得从磁盘读回条目，否则「关闭」只挡住了新写入。
+func TestPromptCacheDisabledSkipsLoad(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	dir := t.TempDir()
+	path := dir + "/prompt_cache.json"
+
+	// 先在开启状态下攒出一份磁盘状态。
+	warm := newPromptCacheTracker(time.Hour)
+	profile := warm.BuildClaudeProfile(newCacheSwitchTestRequest(), 120)
+	warm.Update("acct-1", profile)
+	warm.flush(path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected state file: %v", err)
+	}
+
+	if err := config.UpdatePromptCacheEnabled(false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	cold := newPromptCacheTracker(time.Hour)
+	cold.Load(path)
+	if got := len(cold.entries); got != 0 {
+		t.Errorf("loaded %d entries while disabled, want 0", got)
 	}
 }

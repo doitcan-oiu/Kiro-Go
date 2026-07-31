@@ -407,6 +407,18 @@ type Config struct {
 	// tracker clamps explicit small values up to 256.
 	PromptCacheMaxEntries int `json:"promptCacheMaxEntries,omitempty"`
 
+	// PromptCacheEnabled toggles the simulated prompt-cache accounting. When off,
+	// no cache prefixes are stored or matched and responses report zero
+	// cache_read/cache_creation tokens.
+	//
+	// The upstream (Kiro) does not report prompt-cache usage, so these numbers are
+	// derived locally by hashing request prefixes; operators who do not want that
+	// simulation — or the memory and on-disk state behind it — can disable it here.
+	//
+	// Pointer so a missing key means "on": existing installs must not silently lose
+	// cache accounting when they upgrade into this field.
+	PromptCacheEnabled *bool `json:"promptCacheEnabled,omitempty"`
+
 	// Rate limiting (config-backed with env override; applied at startup, next-restart
 	// on change). A value of 0 means "inherit the KIRO_RATE_LIMIT_* env" (effectively
 	// unlimited when env is also 0). NOT live-reconfigurable — token buckets are fixed
@@ -1509,6 +1521,30 @@ func UpdatePromptCacheMaxEntries(n int) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PromptCacheMaxEntries = n
+	return Save()
+}
+
+// GetPromptCacheEnabled reports whether simulated prompt-cache accounting is on.
+// Defaults to true when unset, so upgrades keep the previous behaviour.
+func GetPromptCacheEnabled() bool {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.PromptCacheEnabled == nil {
+		return true
+	}
+	return *cfg.PromptCacheEnabled
+}
+
+// UpdatePromptCacheEnabled turns simulated prompt-cache accounting on or off and
+// persists the change. Takes effect on the next request; the caller is
+// responsible for dropping any in-memory cache state when switching off.
+func UpdatePromptCacheEnabled(enabled bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	cfg.PromptCacheEnabled = &enabled
 	return Save()
 }
 

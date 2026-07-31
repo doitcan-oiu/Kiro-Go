@@ -91,6 +91,8 @@
   "settings.usageSettings": "用量控制",
   "settings.allowOverUsage": "允许超额使用",
   "settings.allowOverUsageHint": "开启后，即使账号额度用尽也会继续使用该账号处理请求，不再因余额不足而报错",
+  "settings.promptCacheEnabled": "启用缓存读写统计",
+  "settings.promptCacheEnabledHint": "本程序在本地模拟 prompt cache 命中，据此上报 cache_read / cache_creation token 数（上游不提供这些数字）。关闭后不再模拟：这两个字段恒为 0，内存与磁盘上的缓存状态一并清空。默认开启。",
   "settings.saveUsage": "保存用量更改",
   "settings.overUsageSaved": "超额使用设置已保存",
   "settings.thinkingSettings": "Thinking 模式设置",

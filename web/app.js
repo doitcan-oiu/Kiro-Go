@@ -1730,6 +1730,10 @@
     const d = await res.json();
     $('requireApiKey').checked = d.requireApiKey;
     $('allowOverUsage').checked = d.allowOverUsage || false;
+    // 缓存读写总开关默认开启：字段缺失（旧后端 / 未显式配置）按开启回填，
+    // 用 !== false 而不是 || false，否则 undefined 会被显示成「已关闭」。
+    const pcEl = $('promptCacheEnabled');
+    if (pcEl) pcEl.checked = d.promptCacheEnabled !== false;
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     if (maxPayloadEl) maxPayloadEl.value = String(d.maxPayloadBytes || 2000000);
     // D2: read rate-limit fields.
@@ -1849,7 +1853,11 @@
     const allowOverUsage = $('allowOverUsage').checked;
     const maxPayloadEl = document.getElementById('maxPayloadBytes');
     const maxPayloadBytes = maxPayloadEl ? parseInt(maxPayloadEl.value || '0', 10) : 0;
-    await api('/settings', { method: 'POST', body: JSON.stringify({ allowOverUsage, maxPayloadBytes }) });
+    const body = { allowOverUsage, maxPayloadBytes };
+    // 缓存读写总开关与上面两项共用这个保存按钮。
+    const pcEl = $('promptCacheEnabled');
+    if (pcEl) body.promptCacheEnabled = !!pcEl.checked;
+    await api('/settings', { method: 'POST', body: JSON.stringify(body) });
     toast(t('settings.overUsageSaved'), 'success');
   }
   // D2: save rate-limit settings (send ALL 3; 0 = unlimited). Persists but applies on next restart.
