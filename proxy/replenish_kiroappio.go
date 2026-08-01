@@ -49,14 +49,22 @@ func newKiroappioClient(sc config.SupplierConfig) (*kiroappioClient, error) {
 func (c *kiroappioClient) ProviderName() string { return config.ReplenishProviderKiroappio }
 
 // do 发起一次带 Bearer 认证的请求。
+// do 发起一次带 Bearer 认证的请求（非幂等，失败即返回）。
 func (c *kiroappioClient) do(method, path string, body, out interface{}) error {
+	return c.doIdem(method, path, body, out, false)
+}
+
+// doIdem 同 do，但 idempotent=true 时允许对 5xx/网络错误重发。
+// 文档明确："网络超时后用同一个 client_order_id 重试即可，安全"。
+func (c *kiroappioClient) doIdem(method, path string, body, out interface{}, idempotent bool) error {
 	return supplierHTTPDo(supplierHTTPRequest{
-		Provider: "kiroapp.io",
-		Method:   method,
-		URL:      c.baseURL + path,
-		Header:   http.Header{"Authorization": []string{"Bearer " + c.apiKey}},
-		Body:     body,
-		Out:      out,
+		Provider:   "kiroapp.io",
+		Method:     method,
+		URL:        c.baseURL + path,
+		Header:     http.Header{"Authorization": []string{"Bearer " + c.apiKey}},
+		Body:       body,
+		Out:        out,
+		Idempotent: idempotent,
 	})
 }
 
@@ -171,7 +179,8 @@ func (c *kiroappioClient) Claim(req supplierClaimRequest) (*supplierClaim, error
 	}
 
 	var resp kiroappioPurchaseResp
-	if err := c.do(http.MethodPost, "/api/me/purchase", body, &resp); err != nil {
+	// 幂等重试：同 client_order_id 重放返回字节一致的原响应，绝不重复扣款。
+	if err := c.doIdem(http.MethodPost, "/api/me/purchase", body, &resp, true); err != nil {
 		return nil, err
 	}
 

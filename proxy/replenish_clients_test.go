@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"kiro-go/config"
 )
@@ -941,5 +943,178 @@ func TestFlexNumberEdgeCases(t *testing.T) {
 	}
 	if int(oi.V) != 42 {
 		t.Errorf("flexInt = %d, want 42", int(oi.V))
+	}
+}
+
+// --- 5xx 重试（幂等调用）---
+
+// 上游 500 后用同一个 client_order_id 重试必须能成交，且订单号不变——
+// 换新 id 会变成第二笔订单，正是文档警告的重复扣费场景。
+// withFastRetries 把重试等待缩到近乎 0，避免单测为了覆盖退避而真的睡 11 秒。
+// 返回的 cleanup 由 t.Cleanup 调用，保证并行/失败路径也能恢复原值。
+func withFastRetries(t *testing.T) {
+	t.Helper()
+	origDelays := supplierHTTPRetryDelays
+	supplierHTTPRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { supplierHTTPRetryDelays = origDelays })
+}
+
+func TestKirossRetriesOn500WithSameOrderID(t *testing.T) {
+	initTestConfig(t)
+	withFastRetries(t)
+
+	var mu sync.Mutex
+	var orderIDs []string
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		attempts++
+		n := attempts
+		if s, _ := body["client_order_id"].(string); s != "" {
+			orderIDs = append(orderIDs, s)
+		}
+		mu.Unlock()
+
+		// 前两次 500，第三次成交。
+		if n < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("upstream boom"))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"purchased": 1, "remaining": 79,
+			"keys": []map[string]string{{"key": "ksk_after_retry"}},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := newKirossClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	if err != nil {
+		t.Fatalf("newKirossClient: %v", err)
+	}
+	claim, err := c.Claim(supplierClaimRequest{Count: 1, ClientOrderID: "aaaabbbbccccddddeeeeffff00001111"})
+	if err != nil {
+		t.Fatalf("Claim should succeed after retries: %v", err)
+	}
+	if len(claim.Keys) != 1 || claim.Keys[0] != "ksk_after_retry" {
+		t.Errorf("Keys = %v, want [ksk_after_retry]", claim.Keys)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+	// 关键断言：每次重试都必须复用同一个订单号。
+	for i, id := range orderIDs {
+		if id != "aaaabbbbccccddddeeeeffff00001111" {
+			t.Errorf("attempt %d used order id %q, want the original", i+1, id)
+		}
+	}
+}
+
+// 4xx 是请求本身的问题，重试无意义且可能撞幂等键（409），必须只打一次。
+func TestKirossDoesNotRetryOn4xx(t *testing.T) {
+	initTestConfig(t)
+
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "幂等键撞了别的订单"})
+	}))
+	defer srv.Close()
+
+	c, _ := newKirossClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	_, err := c.Claim(supplierClaimRequest{Count: 1, ClientOrderID: "aaaabbbbccccddddeeeeffff00001111"})
+	if err == nil {
+		t.Fatal("expected 409 to fail")
+	}
+	if !strings.Contains(err.Error(), "幂等键撞了别的订单") {
+		t.Errorf("error should surface the upstream reason, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (4xx must not retry)", attempts)
+	}
+}
+
+// 非幂等调用（这里用没有 client_order_id 的 webhook 注册）遇到 5xx 不应重试。
+// 真正的风险点是 kiroapp.cc 的 claim：它没有幂等键，重试就是重复扣费。
+func TestNonIdempotentCallDoesNotRetryOn500(t *testing.T) {
+	initTestConfig(t)
+
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, _ := newKirossClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	if err := c.SetWebhook("https://example.com/hook"); err == nil {
+		t.Fatal("expected failure")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (non-idempotent must not retry)", attempts)
+	}
+}
+
+// kiroapp.cc 没有幂等键：任何 5xx 都必须只打一次，否则重复扣积分。
+func TestKiroappccNeverRetries(t *testing.T) {
+	initTestConfig(t)
+
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k-1"})
+	if _, err := c.Claim(supplierClaimRequest{Count: 2}); err == nil {
+		t.Fatal("expected failure")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want exactly 1 (no idempotency key ⇒ never retry)", attempts)
+	}
+}
+
+// 非 JSON 的 500 响应体要带进错误信息，否则面板上只有一个裸状态码。
+func TestNonJSONErrorBodyIsSurfaced(t *testing.T) {
+	initTestConfig(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
+	}))
+	defer srv.Close()
+
+	c, _ := newKirossClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	err := c.SetWebhook("https://example.com/hook")
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(err.Error(), "502 Bad Gateway") {
+		t.Errorf("error should include the response body snippet, got %v", err)
 	}
 }

@@ -65,14 +65,22 @@ func newKiroceoClient(sc config.SupplierConfig) (*kiroceoClient, error) {
 func (c *kiroceoClient) ProviderName() string { return config.ReplenishProviderKiroceo }
 
 // do 发起一次带 X-API-Key 认证的请求。
+// do 发起一次带 X-API-Key 认证的请求（非幂等，失败即返回）。
 func (c *kiroceoClient) do(method, path string, body, out interface{}) error {
+	return c.doIdem(method, path, body, out, false)
+}
+
+// doIdem 同 do，但 idempotent=true 时允许对 5xx/网络错误重发。
+// 文档明确："遇到 5xx 或网络超时时，请用同一个 client_order_id 重试而不是换新的"。
+func (c *kiroceoClient) doIdem(method, path string, body, out interface{}, idempotent bool) error {
 	return supplierHTTPDo(supplierHTTPRequest{
-		Provider: "kiro.ceo",
-		Method:   method,
-		URL:      c.baseURL + path,
-		Header:   http.Header{"X-API-Key": []string{c.apiKey}},
-		Body:     body,
-		Out:      out,
+		Provider:   "kiro.ceo",
+		Method:     method,
+		URL:        c.baseURL + path,
+		Header:     http.Header{"X-API-Key": []string{c.apiKey}},
+		Body:       body,
+		Out:        out,
+		Idempotent: idempotent,
 	})
 }
 
@@ -201,7 +209,8 @@ func (c *kiroceoClient) Claim(req supplierClaimRequest) (*supplierClaim, error) 
 		"zone":            c.zone,
 		"client_order_id": orderID,
 	}
-	if err := c.do(http.MethodPost, "/api/my/purchase", body, &r); err != nil {
+	// 幂等重试：zone + client_order_id 已固定，重发命中同一笔订单。
+	if err := c.doIdem(http.MethodPost, "/api/my/purchase", body, &r, true); err != nil {
 		return nil, err
 	}
 

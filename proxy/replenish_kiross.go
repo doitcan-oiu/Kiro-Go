@@ -49,14 +49,24 @@ func newKirossClient(sc config.SupplierConfig) (*kirossClient, error) {
 func (c *kirossClient) ProviderName() string { return config.ReplenishProviderKiross }
 
 // do 发起一次带 X-API-Key 认证的请求。
+// do 发起一次带 X-API-Key 认证的请求。
+//
+// idempotent 表示该调用可安全重发：文档明确 5xx/超时应当用同一个 client_order_id
+// 重试而不是换新的（换 id 会变成第二笔订单）。因此 purchase 传 true，靠上游的
+// 幂等键去重；webhook 的写入与探测本身也是幂等的。
 func (c *kirossClient) do(method, path string, body, out interface{}) error {
+	return c.doIdem(method, path, body, out, false)
+}
+
+func (c *kirossClient) doIdem(method, path string, body, out interface{}, idempotent bool) error {
 	return supplierHTTPDo(supplierHTTPRequest{
-		Provider: "kiross",
-		Method:   method,
-		URL:      c.baseURL + path,
-		Header:   http.Header{"X-API-Key": []string{c.apiKey}},
-		Body:     body,
-		Out:      out,
+		Provider:   "kiross",
+		Method:     method,
+		URL:        c.baseURL + path,
+		Header:     http.Header{"X-API-Key": []string{c.apiKey}},
+		Body:       body,
+		Out:        out,
+		Idempotent: idempotent,
 	})
 }
 
@@ -113,7 +123,8 @@ func (c *kirossClient) Claim(req supplierClaimRequest) (*supplierClaim, error) {
 		"count":           req.Count,
 		"client_order_id": orderID,
 	}
-	if err := c.do(http.MethodPost, "/api/my/purchase", body, &r); err != nil {
+	// 幂等重试：client_order_id 已固定，5xx/网络抖动重发不会二次成交。
+	if err := c.doIdem(http.MethodPost, "/api/my/purchase", body, &r, true); err != nil {
 		return nil, err
 	}
 
