@@ -363,6 +363,11 @@ func (h *Handler) claimAndImport(client replenishSupplier, rc config.ReplenishCo
 	}
 	claim, err := client.Claim(req)
 	if err != nil {
+		// 带上订单号：提取失败时上游可能已经成交（尤其是解码/超时这类"请求成功但
+		// 响应没读全"的失败），支持幂等的供应商用同一个 client_order_id 重试即可
+		// 原样取回该笔订单，不会二次扣费。订单号只在这里出现，不记下来就找不回了。
+		logger.Warnf("[Replenish] provider=%s claim failed (client_order_id=%s count=%d): %v",
+			client.ProviderName(), req.ClientOrderID, req.Count, err)
 		return nil, err
 	}
 

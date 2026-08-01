@@ -776,3 +776,170 @@ func TestEffectiveImportRegionFollowsZone(t *testing.T) {
 		t.Errorf("kiro.ceo default import region = %q, want us-east-1", got)
 	}
 }
+
+// --- 宽松数值解析（flexFloat / flexInt）---
+
+// 回归：kiro.ss 的 purchase 把 remaining 返回成字符串 "80"，严格的 float64 会让
+// 整个响应解码失败。purchase 是已扣费的操作，解码失败等于「钱花了但 Key 没入库」，
+// 所以次要展示字段的类型漂移绝不能毁掉整笔订单。
+func TestKirossPurchaseAcceptsStringRemaining(t *testing.T) {
+	initTestConfig(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// remaining 与 purchased 都用字符串形式，模拟上游的类型漂移。
+		w.Write([]byte(`{"client_order_id":"abc","purchased":"2","remaining":"80",` +
+			`"keys":[{"key":"ksk_a"},{"key":"ksk_b"}]}`))
+	}))
+	defer srv.Close()
+
+	c, err := newKirossClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	if err != nil {
+		t.Fatalf("newKirossClient: %v", err)
+	}
+
+	claim, err := c.Claim(supplierClaimRequest{Count: 2, ClientOrderID: strings.Repeat("a", 32)})
+	if err != nil {
+		t.Fatalf("Claim must not fail on string-typed numbers: %v", err)
+	}
+	// 最重要的断言：Key 必须拿到手，否则这笔已扣费的订单就丢了。
+	if len(claim.Keys) != 2 || claim.Keys[0] != "ksk_a" || claim.Keys[1] != "ksk_b" {
+		t.Fatalf("Keys = %v, want [ksk_a ksk_b]", claim.Keys)
+	}
+	if claim.Purchased != 2 {
+		t.Errorf("Purchased = %d, want 2", claim.Purchased)
+	}
+	if claim.Remaining != 80 {
+		t.Errorf("Remaining = %v, want 80", claim.Remaining)
+	}
+}
+
+// 各家的 purchase 都不能被字符串数值噎住——四家里三家是真扣费的。
+func TestPurchaseResponsesTolerateStringNumbers(t *testing.T) {
+	initTestConfig(t)
+
+	t.Run("kiroceo", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"purchased":"3","remaining":"4500","zone":"eu",` +
+				`"unit_price":"15","total_credits":"45","keys":[{"key":"k1"},{"key":"k2"},{"key":"k3"}]}`))
+		}))
+		defer srv.Close()
+		c, err := newKiroceoClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "x", Zone: "eu"})
+		if err != nil {
+			t.Fatalf("newKiroceoClient: %v", err)
+		}
+		claim, err := c.Claim(supplierClaimRequest{Count: 3, ClientOrderID: strings.Repeat("b", 32)})
+		if err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if len(claim.Keys) != 3 {
+			t.Fatalf("Keys = %v, want 3 keys", claim.Keys)
+		}
+		if claim.Spent != 45 {
+			t.Errorf("Spent = %v, want 45", claim.Spent)
+		}
+		if claim.Zone != "eu" {
+			t.Errorf("Zone = %q, want eu", claim.Zone)
+		}
+	})
+
+	t.Run("kiroappio", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/me/profile" {
+				w.Write([]byte(`{"user":{"name":"alice","balance":"2060"}}`))
+				return
+			}
+			w.Write([]byte(`{"purchased":"2","total_debit":"60","order_id":"o1",` +
+				`"keys":[{"key":"sk-1","price":"30"},{"key":"sk-2","price":"30"}]}`))
+		}))
+		defer srv.Close()
+		c, err := newKiroappioClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "km_1"})
+		if err != nil {
+			t.Fatalf("newKiroappioClient: %v", err)
+		}
+		claim, err := c.Claim(supplierClaimRequest{Count: 2, ClientOrderID: strings.Repeat("c", 32)})
+		if err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if len(claim.Keys) != 2 {
+			t.Fatalf("Keys = %v, want 2 keys", claim.Keys)
+		}
+		if claim.Spent != 60 {
+			t.Errorf("Spent = %v, want 60", claim.Spent)
+		}
+		if claim.Remaining != 2060 {
+			t.Errorf("Remaining = %v, want 2060", claim.Remaining)
+		}
+	})
+
+	t.Run("kiroappcc", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/openapi/balance" {
+				w.Write([]byte(`{"balance":"100"}`))
+				return
+			}
+			w.Write([]byte(`{"keys":["ksk_x","ksk_y"],"pointsCost":"3.5"}`))
+		}))
+		defer srv.Close()
+		c, err := newKiroappccClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "k"})
+		if err != nil {
+			t.Fatalf("newKiroappccClient: %v", err)
+		}
+		claim, err := c.Claim(supplierClaimRequest{Count: 2})
+		if err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+		if len(claim.Keys) != 2 {
+			t.Fatalf("Keys = %v, want 2 keys", claim.Keys)
+		}
+		if claim.Spent != 3.5 {
+			t.Errorf("Spent = %v, want 3.5", claim.Spent)
+		}
+		if claim.Remaining != 100 {
+			t.Errorf("Remaining = %v, want 100", claim.Remaining)
+		}
+	})
+}
+
+// flexFloat 的边界：空串、null、缺失、非数字都按 0 处理而不报错，因为它们只影响
+// 展示，不该让一笔成交的订单失败。
+func TestFlexNumberEdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want float64
+	}{
+		{"plain number", `{"v":12.5}`, 12.5},
+		{"string number", `{"v":"12.5"}`, 12.5},
+		{"integer string", `{"v":"80"}`, 80},
+		{"empty string", `{"v":""}`, 0},
+		{"null", `{"v":null}`, 0},
+		{"missing", `{}`, 0},
+		{"non-numeric string", `{"v":"n/a"}`, 0},
+		{"negative string", `{"v":"-3"}`, -3},
+		{"whitespace padded", `{"v":" 7 "}`, 7},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out struct {
+				V flexFloat `json:"v"`
+			}
+			if err := json.Unmarshal([]byte(tc.json), &out); err != nil {
+				t.Fatalf("Unmarshal(%s) must not fail: %v", tc.json, err)
+			}
+			if got := out.V.Float64(); got != tc.want {
+				t.Errorf("v = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// flexInt 走同一条解析路径，小数按截断处理。
+	var oi struct {
+		V flexInt `json:"v"`
+	}
+	if err := json.Unmarshal([]byte(`{"v":"42"}`), &oi); err != nil {
+		t.Fatalf("flexInt unmarshal: %v", err)
+	}
+	if int(oi.V) != 42 {
+		t.Errorf("flexInt = %d, want 42", int(oi.V))
+	}
+}

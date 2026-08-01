@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"kiro-go/config"
 )
@@ -100,3 +102,61 @@ func firstNonEmptyString(vals ...string) string {
 	}
 	return ""
 }
+
+// flexFloat 是宽松解析的数值：既接受 JSON 数字，也接受字符串形式的数字。
+//
+// 起因是 kiro.ss 的 purchase 把 remaining 返回成 "80" 而非 80，严格的 float64
+// 会让整个响应解码失败——而 purchase 是已经成交扣费的操作，解码失败等于钱花了
+// 但 Key 没入库。展示用的数值字段一律用这个类型，避免一个次要字段的类型漂移
+// 毁掉整笔订单。
+type flexFloat float64
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	// 字符串形式：剥掉引号再按数字解析。空字符串按 0 处理。
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		if inner == "" {
+			*f = 0
+			return nil
+		}
+		v, err := strconv.ParseFloat(inner, 64)
+		if err != nil {
+			// 非数字字符串不视为错误：这是展示字段，宁可显示 0 也不要毁掉订单。
+			*f = 0
+			return nil
+		}
+		*f = flexFloat(v)
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		*f = 0
+		return nil
+	}
+	*f = flexFloat(v)
+	return nil
+}
+
+// Float64 返回底层数值。
+func (f flexFloat) Float64() float64 { return float64(f) }
+
+// flexInt 与 flexFloat 同理，用于可能被上游写成字符串的整数字段
+// （purchased、stock 之类）。
+type flexInt int
+
+func (i *flexInt) UnmarshalJSON(data []byte) error {
+	var f flexFloat
+	if err := f.UnmarshalJSON(data); err != nil {
+		return err
+	}
+	*i = flexInt(int(f))
+	return nil
+}
+
+// Int 返回底层数值。
+func (i flexInt) Int() int { return int(i) }

@@ -63,20 +63,20 @@ func (c *kiroappioClient) do(method, path string, body, out interface{}) error {
 // kiroappioProfile 对应 GET /api/me/profile 响应。
 type kiroappioProfile struct {
 	User struct {
-		Name    string  `json:"name"`
-		Email   string  `json:"email"`
-		Balance float64 `json:"balance"`
+		Name    string    `json:"name"`
+		Email   string    `json:"email"`
+		Balance flexFloat `json:"balance"`
 	} `json:"user"`
 }
 
 // kiroappioStock 对应 GET /api/me/stock 响应。
 // Price 是 PriceMin 的向后兼容别名（阶梯定价下的最低价）。
 type kiroappioStock struct {
-	Stock    int     `json:"stock"`
-	Price    float64 `json:"price"`
-	PriceMin float64 `json:"price_min"`
-	PriceMax float64 `json:"price_max"`
-	Balance  float64 `json:"balance"`
+	Stock    flexInt   `json:"stock"`
+	Price    flexFloat `json:"price"`
+	PriceMin flexFloat `json:"price_min"`
+	PriceMax flexFloat `json:"price_max"`
+	Balance  flexFloat `json:"balance"`
 }
 
 // kiroappioPurchaseResp 对应 POST /api/me/purchase 响应。
@@ -85,16 +85,16 @@ type kiroappioStock struct {
 // 供应商侧的开号材料，账号池不存这些字段。
 // 注意 remaining 是剩余库存，不是余额。
 type kiroappioPurchaseResp struct {
-	Purchased  int     `json:"purchased"`
-	Requested  int     `json:"requested"`
-	Remaining  int     `json:"remaining"`
-	UnitPrice  float64 `json:"unit_price"`
-	TotalDebit float64 `json:"total_debit"`
-	OrderID    string  `json:"order_id"`
-	Replayed   bool    `json:"replayed"`
+	Purchased  flexInt   `json:"purchased"`
+	Requested  flexInt   `json:"requested"`
+	Remaining  flexInt   `json:"remaining"`
+	UnitPrice  flexFloat `json:"unit_price"`
+	TotalDebit flexFloat `json:"total_debit"`
+	OrderID    string    `json:"order_id"`
+	Replayed   bool      `json:"replayed"`
 	Keys       []struct {
-		Key   string  `json:"key"`
-		Price float64 `json:"price"`
+		Key   string    `json:"key"`
+		Price flexFloat `json:"price"`
 	} `json:"keys"`
 }
 
@@ -112,7 +112,7 @@ func (c *kiroappioClient) Stock() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return s.Stock, nil
+	return int(s.Stock), nil
 }
 
 // Account 返回账户信息：名称与余额来自 profile，价格区间来自 stock。
@@ -126,7 +126,7 @@ func (c *kiroappioClient) Account() (*supplierAccount, error) {
 	if name == "" {
 		name = p.User.Email
 	}
-	acc := &supplierAccount{Name: name, Remaining: p.User.Balance}
+	acc := &supplierAccount{Name: name, Remaining: p.User.Balance.Float64()}
 	if s, err := c.stock(); err == nil {
 		// price 是 price_min 的别名，优先用显式的 price_min。
 		price := s.PriceMin
@@ -134,11 +134,11 @@ func (c *kiroappioClient) Account() (*supplierAccount, error) {
 			price = s.Price
 		}
 		if price > 0 {
-			acc.KeyPrice = price
+			acc.KeyPrice = price.Float64()
 			acc.HasPrice = true
 			// 仅在确有区间时给出上限，避免面板显示 "30~30"。
 			if s.PriceMax > price {
-				acc.PriceMax = s.PriceMax
+				acc.PriceMax = s.PriceMax.Float64()
 			}
 		}
 	}
@@ -187,8 +187,8 @@ func (c *kiroappioClient) Claim(req supplierClaimRequest) (*supplierClaim, error
 
 	claim := &supplierClaim{
 		Keys:      keys,
-		Purchased: resp.Purchased,
-		Spent:     resp.TotalDebit,
+		Purchased: int(resp.Purchased),
+		Spent:     resp.TotalDebit.Float64(),
 		// 回传我方使用的幂等键而非上游批次 id：面板上展示它才有「重试用同一个」的意义。
 		OrderID: orderID,
 	}
@@ -196,7 +196,7 @@ func (c *kiroappioClient) Claim(req supplierClaimRequest) (*supplierClaim, error
 	// 失败不影响本次提取结果。
 	var p kiroappioProfile
 	if err := c.do(http.MethodGet, "/api/me/profile", nil, &p); err == nil {
-		claim.Remaining = p.User.Balance
+		claim.Remaining = p.User.Balance.Float64()
 	}
 	return claim, nil
 }

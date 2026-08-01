@@ -144,13 +144,13 @@ func (c *kiroappccClient) decodeError(method, path string, resp *http.Response, 
 
 // kiroappccStock 对应 GET /openapi/stock 响应。
 type kiroappccStock struct {
-	AvailableKeys int     `json:"availableKeys"`
-	KeyPrice      float64 `json:"keyPrice"`
+	AvailableKeys flexInt   `json:"availableKeys"`
+	KeyPrice      flexFloat `json:"keyPrice"`
 }
 
 // kiroappccBalance 对应 GET /openapi/balance 响应。
 type kiroappccBalance struct {
-	Balance float64 `json:"balance"`
+	Balance flexFloat `json:"balance"`
 }
 
 // kiroappccClaimResp 覆盖 /openapi/claim 的两种响应形态：
@@ -158,9 +158,9 @@ type kiroappccBalance struct {
 //
 // PointsCost 为 0 表示这批是自己投放凭证产出的，不扣积分（车主自取）。
 type kiroappccClaimResp struct {
-	Key        string   `json:"key"`
-	Keys       []string `json:"keys"`
-	PointsCost float64  `json:"pointsCost"`
+	Key        string    `json:"key"`
+	Keys       []string  `json:"keys"`
+	PointsCost flexFloat `json:"pointsCost"`
 }
 
 // Stock 返回可用库存数量。
@@ -169,7 +169,7 @@ func (c *kiroappccClient) Stock() (int, error) {
 	if err := c.do(http.MethodGet, "/openapi/stock", nil, &s); err != nil {
 		return 0, err
 	}
-	return s.AvailableKeys, nil
+	return int(s.AvailableKeys), nil
 }
 
 // Account 返回账户信息：余额来自 /openapi/balance，单价来自 /openapi/stock。
@@ -179,10 +179,10 @@ func (c *kiroappccClient) Account() (*supplierAccount, error) {
 	if err := c.do(http.MethodGet, "/openapi/balance", nil, &b); err != nil {
 		return nil, err
 	}
-	acc := &supplierAccount{Remaining: b.Balance}
+	acc := &supplierAccount{Remaining: b.Balance.Float64()}
 	var s kiroappccStock
 	if err := c.do(http.MethodGet, "/openapi/stock", nil, &s); err == nil && s.KeyPrice > 0 {
-		acc.KeyPrice = s.KeyPrice
+		acc.KeyPrice = s.KeyPrice.Float64()
 		acc.HasPrice = true
 	}
 	return acc, nil
@@ -227,14 +227,14 @@ func (c *kiroappccClient) Claim(req supplierClaimRequest) (*supplierClaim, error
 
 	claim := &supplierClaim{
 		Keys:  keys,
-		Spent: resp.PointsCost,
+		Spent: resp.PointsCost.Float64(),
 		// 无订单号：这家没有幂等键，不伪造一个，否则面板会显示一个
 		// 「重试可用」的假象。
 	}
 	// claim 响应不含余额，补查一次供面板展示；失败不影响本次提取结果。
 	var b kiroappccBalance
 	if err := c.do(http.MethodGet, "/openapi/balance", nil, &b); err == nil {
-		claim.Remaining = b.Balance
+		claim.Remaining = b.Balance.Float64()
 	}
 	return claim, nil
 }

@@ -62,9 +62,9 @@ func (c *kirossClient) do(method, path string, body, out interface{}) error {
 
 // kirossPurchaseResp 对应 POST /api/my/purchase 响应。
 type kirossPurchaseResp struct {
-	ClientOrderID string  `json:"client_order_id"`
-	Purchased     int     `json:"purchased"`
-	Remaining     float64 `json:"remaining"`
+	ClientOrderID string    `json:"client_order_id"`
+	Purchased     flexInt   `json:"purchased"`
+	Remaining     flexFloat `json:"remaining"`
 	Keys          []struct {
 		Key string `json:"key"`
 	} `json:"keys"`
@@ -129,8 +129,8 @@ func (c *kirossClient) Claim(req supplierClaimRequest) (*supplierClaim, error) {
 
 	return &supplierClaim{
 		Keys:      keys,
-		Purchased: r.Purchased,
-		Remaining: r.Remaining,
+		Purchased: int(r.Purchased),
+		Remaining: r.Remaining.Float64(),
 		OrderID:   orderID,
 	}, nil
 }

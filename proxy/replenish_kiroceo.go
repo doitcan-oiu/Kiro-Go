@@ -78,11 +78,11 @@ func (c *kiroceoClient) do(method, path string, body, out interface{}) error {
 
 // kiroceoProfile 对应 GET /api/my/profile。字段名沿用旧版，数字含义是积分。
 type kiroceoProfile struct {
-	Name      string  `json:"name"`
-	Email     string  `json:"email"`
-	Quota     float64 `json:"quota"`
-	Remaining float64 `json:"remaining"`
-	UsedQuota float64 `json:"used_quota"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	Quota     flexFloat `json:"quota"`
+	Remaining flexFloat `json:"remaining"`
+	UsedQuota flexFloat `json:"used_quota"`
 }
 
 // kiroceoStock 对应 GET /api/my/stock。
@@ -90,11 +90,11 @@ type kiroceoProfile struct {
 // max 是可提取数量；zones 给出各区单价与可购量，用于把「本区」的库存和单价
 // 从聚合数字里挑出来——按区隔离的语义下，别区的库存对本客户端没有意义。
 type kiroceoStock struct {
-	Max   int `json:"max"`
+	Max   flexInt `json:"max"`
 	Zones []struct {
-		Zone      string  `json:"zone"`
-		Price     float64 `json:"price"`
-		Available int     `json:"available"`
+		Zone      string    `json:"zone"`
+		Price     flexFloat `json:"price"`
+		Available flexInt   `json:"available"`
 	} `json:"zones"`
 }
 
@@ -102,7 +102,7 @@ type kiroceoStock struct {
 func (s *kiroceoStock) zoneInfo(zone string) (price float64, available int, ok bool) {
 	for _, z := range s.Zones {
 		if config.NormalizeSupplierZone(z.Zone) == zone {
-			return z.Price, z.Available, true
+			return z.Price.Float64(), int(z.Available), true
 		}
 	}
 	return 0, 0, false
@@ -112,13 +112,13 @@ func (s *kiroceoStock) zoneInfo(zone string) (price float64, available int, ok b
 //
 // 只取 keys[].key：账号/密码/issuer_url 是供应商侧的开号材料，账号池不存这些字段。
 type kiroceoPurchaseResp struct {
-	ClientOrderID string  `json:"client_order_id"`
-	Purchased     int     `json:"purchased"`
-	Remaining     float64 `json:"remaining"`
-	Zone          string  `json:"zone"`
-	UnitPrice     float64 `json:"unit_price"`
-	TotalCredits  float64 `json:"total_credits"`
-	OrderID       string  `json:"order_id"`
+	ClientOrderID string    `json:"client_order_id"`
+	Purchased     flexInt   `json:"purchased"`
+	Remaining     flexFloat `json:"remaining"`
+	Zone          string    `json:"zone"`
+	UnitPrice     flexFloat `json:"unit_price"`
+	TotalCredits  flexFloat `json:"total_credits"`
+	OrderID       string    `json:"order_id"`
 	Keys          []struct {
 		Key string `json:"key"`
 	} `json:"keys"`
@@ -137,7 +137,7 @@ func (c *kiroceoClient) Stock() (int, error) {
 	if _, available, ok := s.zoneInfo(c.zone); ok {
 		return available, nil
 	}
-	return s.Max, nil
+	return int(s.Max), nil
 }
 
 func (c *kiroceoClient) stock() (*kiroceoStock, error) {
@@ -161,9 +161,9 @@ func (c *kiroceoClient) Account() (*supplierAccount, error) {
 	}
 	acc := &supplierAccount{
 		Name:      name,
-		Quota:     p.Quota,
-		Remaining: p.Remaining,
-		UsedQuota: p.UsedQuota,
+		Quota:     p.Quota.Float64(),
+		Remaining: p.Remaining.Float64(),
+		UsedQuota: p.UsedQuota.Float64(),
 		HasQuota:  true,
 	}
 	if s, err := c.stock(); err == nil {
@@ -217,10 +217,10 @@ func (c *kiroceoClient) Claim(req supplierClaimRequest) (*supplierClaim, error) 
 
 	return &supplierClaim{
 		Keys:      keys,
-		Purchased: r.Purchased,
-		Remaining: r.Remaining,
+		Purchased: int(r.Purchased),
+		Remaining: r.Remaining.Float64(),
 		// 按积分计费，total_credits 是本单权威扣费额。
-		Spent:   r.TotalCredits,
+		Spent:   r.TotalCredits.Float64(),
 		OrderID: orderID,
 		// 回传成交区域，供编排层决定导入区域（上游未回传时用配置值兜底）。
 		Zone: firstNonEmptyString(config.NormalizeSupplierZone(r.Zone), c.zone),
