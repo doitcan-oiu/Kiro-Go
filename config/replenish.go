@@ -43,6 +43,10 @@ const (
 	// ReplenishProviderKiroappcc 是 kiroapp.cc：Bearer 令牌，/openapi/* 接口，
 	// claim 无幂等键（重试会重复扣积分），支持 webhook 但地址在其站点后台手填。
 	ReplenishProviderKiroappcc = "kiroappcc"
+	// ReplenishProviderKiroceo 是 kiro.ceo：X-API-Key 认证，/api/my/* 接口，
+	// purchase 带 client_order_id 幂等，支持 PUT /api/my/webhook 自动注册回调。
+	// 独有「区域」概念：下单必须指定 zone（us / eu），且不跨区补货。
+	ReplenishProviderKiroceo = "kiroceo"
 )
 
 // DefaultKiroappioBaseURL 是 kiroapp.io 的默认 API 基地址；用户只需填令牌。
@@ -51,9 +55,55 @@ const DefaultKiroappioBaseURL = "http://kiroapp.io"
 // DefaultKiroappccBaseURL 是 kiroapp.cc 的默认 API 基地址；用户只需填令牌。
 const DefaultKiroappccBaseURL = "https://kiroapp.cc"
 
+// DefaultKiroceoBaseURL 是 kiro.ceo 的默认 API 基地址；用户只需填密钥。
+const DefaultKiroceoBaseURL = "https://kiro.ceo"
+
+// 供应商区域（zone）。仅 kiro.ceo 有此概念：下单必须显式指定，且严格按区隔离
+// （不传默认美国区，缺货不会用另一区顶上）。
+const (
+	SupplierZoneUS = "us"
+	SupplierZoneEU = "eu"
+)
+
+// supplierZoneRegions 把供应商的 zone 映射到导入账号时使用的 AWS 区域。
+// 这是「买哪个区就按哪个区导入」的单一数据源：下单与导入必须一致，否则 Key 会
+// 带着错误的区域进池，请求打到错误的端点上。
+var supplierZoneRegions = map[string]string{
+	SupplierZoneUS: "us-east-1",
+	SupplierZoneEU: "eu-central-1",
+}
+
+// SupplierZones 返回支持的 zone 列表（顺序即面板下拉顺序）。
+func SupplierZones() []string {
+	return []string{SupplierZoneUS, SupplierZoneEU}
+}
+
+// NormalizeSupplierZone 归一化 zone 输入。未知值返回空串，调用方据此拒绝——
+// 上游对非法 zone 直接 400，静默改写成美国区会让用户在不知情下买错区域的号。
+func NormalizeSupplierZone(z string) string {
+	switch strings.ToLower(strings.TrimSpace(z)) {
+	case SupplierZoneUS, "us-east-1", "america", "美国":
+		return SupplierZoneUS
+	case SupplierZoneEU, "eu-central-1", "europe", "欧洲":
+		return SupplierZoneEU
+	default:
+		return ""
+	}
+}
+
+// SupplierZoneRegion 返回该 zone 对应的导入区域；未知 zone 返回空串。
+func SupplierZoneRegion(zone string) string {
+	return supplierZoneRegions[NormalizeSupplierZone(zone)]
+}
+
+// SupportsZone 报告该供应商是否有区域概念。
+func SupportsZone(provider string) bool {
+	return NormalizeReplenishProvider(provider) == ReplenishProviderKiroceo
+}
+
 // ReplenishProviders 是全部已对接的供应商标识，顺序即面板展示与补号遍历顺序。
 func ReplenishProviders() []string {
-	return []string{ReplenishProviderKiross, ReplenishProviderKiroappio, ReplenishProviderKiroappcc}
+	return []string{ReplenishProviderKiross, ReplenishProviderKiroappio, ReplenishProviderKiroappcc, ReplenishProviderKiroceo}
 }
 
 // NormalizeReplenishProvider 把任意输入归一化为已知的供应商标识。
@@ -65,6 +115,8 @@ func NormalizeReplenishProvider(p string) string {
 		return ReplenishProviderKiross
 	case ReplenishProviderKiroappio, "kiroapp.io":
 		return ReplenishProviderKiroappio
+	case ReplenishProviderKiroceo, "kiro.ceo":
+		return ReplenishProviderKiroceo
 	case ReplenishProviderKiroappcc, "kiroapp.cc", "kiroapp":
 		// "kiroapp" 是这家在更早版本里的标识，保留以兼容升级。
 		return ReplenishProviderKiroappcc
@@ -83,6 +135,11 @@ type SupplierConfig struct {
 	BaseURL string `json:"baseUrl,omitempty"`
 	// ApiKey 是该家的凭证：kiross 用于 X-API-Key，kiroappio 用于 Bearer。
 	ApiKey string `json:"apiKey,omitempty"`
+
+	// Zone 是该家的采购区域，仅对有区域概念的供应商（kiro.ceo）有意义。
+	// 取值见 SupplierZone* 常量，留空按 us 处理（与上游默认一致）。
+	// 它同时决定下单的 zone 参数与导入账号时写入的 AWS 区域，二者必须一致。
+	Zone string `json:"zone,omitempty"`
 
 	// WebhookCount 是收到该家 new_keys_available 推送时下单的数量。
 	// 这是「按供应商分别设置买几个」的落点：两家可以配不同数量。
@@ -166,6 +223,7 @@ func (rc ReplenishConfig) EnabledProviders() []string {
 var defaultSupplierBaseURLs = map[string]string{
 	ReplenishProviderKiroappio: DefaultKiroappioBaseURL,
 	ReplenishProviderKiroappcc: DefaultKiroappccBaseURL,
+	ReplenishProviderKiroceo:   DefaultKiroceoBaseURL,
 }
 
 // SupplierBaseURL 返回该供应商生效的 API 基地址（已去除末尾斜杠）。
@@ -187,7 +245,35 @@ func DefaultSupplierBaseURL(provider string) string {
 // SupportsWebhookAutoRegister 报告该供应商能否通过 API 自动注册回调地址。
 // kiroapp.io 只能在其站点「设置 → Webhook 配置」里手填，故返回 false。
 func SupportsWebhookAutoRegister(provider string) bool {
-	return NormalizeReplenishProvider(provider) == ReplenishProviderKiross
+	switch NormalizeReplenishProvider(provider) {
+	case ReplenishProviderKiross, ReplenishProviderKiroceo:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveZone 返回该家生效的采购区域。留空时回落到 us（与上游默认一致）。
+// 对没有区域概念的供应商返回空串，客户端据此不带 zone 参数。
+func (rc ReplenishConfig) EffectiveZone(provider string) string {
+	if !SupportsZone(provider) {
+		return ""
+	}
+	if z := NormalizeSupplierZone(rc.Supplier(provider).Zone); z != "" {
+		return z
+	}
+	return SupplierZoneUS
+}
+
+// EffectiveImportRegion 返回导入该家 Key 时应使用的区域。
+//
+// 有区域概念的供应商（kiro.ceo）必须按采购区导入，否则 Key 会带着错误区域进池；
+// 其余各家沿用全局 Region 设置（留空则由导入逻辑自动探测）。
+func (rc ReplenishConfig) EffectiveImportRegion(provider string) string {
+	if region := SupplierZoneRegion(rc.EffectiveZone(provider)); region != "" {
+		return region
+	}
+	return rc.Region
 }
 
 // EffectiveWebhookCount 返回收到该家推送时应下单的数量。
@@ -318,6 +404,7 @@ type SupplierUpdate struct {
 	Enabled      *bool
 	BaseURL      *string
 	ApiKey       *string
+	Zone         *string
 	WebhookCount *int
 }
 
@@ -376,6 +463,11 @@ func UpdateReplenishSettings(rc ReplenishConfig, suppliers map[string]SupplierUp
 		// 空字符串 = 保持原密钥不变（面板不回显明文）。
 		if up.ApiKey != nil && *up.ApiKey != "" {
 			sc.ApiKey = strings.TrimSpace(*up.ApiKey)
+		}
+		if up.Zone != nil {
+			// 非法 zone 归一化为空串，由 EffectiveZone 回落到 us；
+			// 不静默写入脏值，避免下单时被上游 400。
+			sc.Zone = NormalizeSupplierZone(*up.Zone)
 		}
 		if up.WebhookCount != nil {
 			n := *up.WebhookCount

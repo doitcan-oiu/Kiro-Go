@@ -1,0 +1,132 @@
+鉴权
+所有接口用请求头 X-API-Key 携带你的访问密钥，没有额外的登录步骤、也不需要换 token。 密钥可以在「账户」页查看，忘了随时能再看。
+
+curl -H "X-API-Key: YOUR_API_KEY" https://kiro.ceo/api/my/profile
+密钥等同于你的账号凭据，不要写进前端代码或提交到代码仓库。泄露后请联系管理员轮换。
+额度与积分
+本站按积分计费，不再按「还能提几个号」。每个区域单价独立设置，当前是 美国区(us) 20 积分/个，欧洲区(eu) 15 积分/个。 提货时扣的积分 = 该区单价 × 实际成交数量。
+
+如果你之前对接的是旧版接口：字段名一个都没改（quota、remaining、used_quota、purchased），只是这些数字现在表示积分而不是个数。 原来的代码不用改就能继续跑。
+接口清单
+下面这组 /api/my/* 与旧版完全兼容。/api/me/purchase 与 /api/my/purchase 接受同样的请求体、返回同样的兼容结构，可以任选其一。
+
+GET
+/api/my/profile
+账号信息与积分余额
+GET
+/api/my/stock
+可提取数量、单次上下限、各区单价与可购量（zones 数组）
+POST
+/api/my/purchase
+提货。带 client_order_id 作为幂等键，zone 可选（不传默认美国区，可传 us / eu）。等价于 /api/me/purchase
+GET
+/api/my/keys
+我的凭据。带 ?history=1 时含已失效的
+GET
+/api/my/purchase-orders
+历史订单
+GET
+/api/my/keys/usage
+用量采样（每分钟调用频率）
+POST
+/api/my/redeem
+兑换码换积分
+PUT
+/api/my/webhook
+保存到货通知地址
+提货请求
+curl -X POST https://kiro.ceo/api/my/purchase \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"count": 5, "zone": "us", "client_order_id": "0123456789abcdef0123456789abcdef"}'
+zone 参数按区严格隔离，不跨区补货：
+不传 zone → 默认只从美国区取号；美国区缺货就返回缺货，不会用欧洲区的号顶上。
+zone: "us" → 只拿美国区。
+zone: "eu" → 只拿欧洲区。
+传入 us / eu 以外的值 → 直接 400 报错，不会静默按美国区处理。
+换句话说：想要欧洲区的号，必须显式传 zone: "eu"；只有这一种方式能拉到欧洲区。
+提货响应
+{
+  "client_order_id": "0123456789abcdef0123456789abcdef",
+  "purchased": 5,              // 实际成交数量，可能小于 count
+  "remaining": 4500,           // 扣后积分余额
+  "keys": [                    // 对象数组，每个元素是一个可用凭据
+    {
+      "key": "kiro-xxx",
+      "account": "user@example.com",
+      "password": "...",
+      "issuer_url": "https://..."
+    }
+  ],
+  "zone": "us",                // 以下为新增字段，老客户端可忽略
+  "unit_price": 100,
+  "total_credits": 500,
+  "order_id": "a1b2c3..."
+}
+务必按 purchased 而不是 count 处理结果。库存是并发争抢的，申请 5 个拿到 3 个是正常结果，只按实际成交数量扣费。
+keys 是对象数组，每个元素含key / account / password / issuer_url 四个字段， 直接遍历取用即可。
+幂等键规则
+client_order_id 必须是 32 位十六进制（也可以用Idempotency-Key 请求头传）。网络超时后请用同一个 id 重试—— 服务端会识别成同一笔订单原样返回，不会重复扣费、重复发货。换一个新 id 重试则会变成第二笔订单。
+
+自动提货流程
+推荐的做法是「收到通知再提货」，而不是定时轮询：
+
+1. 配好 webhook 地址（本页下方可以直接模拟推送来联调）
+2. 收到 new_keys_available 事件
+3. 取出事件里的 purchase_order_id
+4. 用它作为 client_order_id 调 /api/my/purchase
+   —— 这样即使你的服务重启、事件被重复投递，也只会成交一次
+5. 按响应里的 purchased 和 keys 入库
+
+如果一定要轮询，先查 /api/my/stock 的 max 字段，大于 0 再提货，
+间隔不要短于 30 秒。
+直接把事件里的 purchase_order_id 当client_order_id 用，是最省事的幂等做法： webhook 可能重投，而同一个 id 只会成交一次。
+Webhook
+配置地址后，系统会在两种情况下向你 POST 一个 JSON。 失败会自动重试 3 次（间隔 3s / 8s），请在 10 秒内返回 2xx。
+
+事件类型
+字段	类型	说明
+new_keys_available	string	有新号入库。带 purchase_order_id，直接拿去当提货的幂等键。
+all_keys_dead	string	你名下的号本轮全部失效，系统正在自动补货。
+test	string	你点「发送测试」时推的，仅用于验证地址可达。
+载荷字段
+字段	类型	说明
+event	string	事件类型，见上表
+event_id	string	事件唯一 id，可用于去重
+purchase_order_id	string	仅 new_keys_available 有。作为 client_order_id 提货
+message	string	给人看的中文描述
+new_keys	int	仅 new_keys_available 有。新增数量
+dead	int	仅 all_keys_dead 有。失效数量
+zone	string	区域（us / eu），仅补货事件有
+新号到货
+{
+  "event": "new_keys_available",
+  "event_id": "7f3a9c2e1b4d5a6f8e9c0b1a2d3e4f5a",
+  "purchase_order_id": "7f3a9c2e1b4d5a6f8e9c0b1a2d3e4f5a",
+  "message": "美国区新增 20 个 Key 已就绪；...",
+  "new_keys": 20,
+  "zone": "us"
+}
+全部失效
+{
+  "event": "all_keys_dead",
+  "event_id": "3c8d1f0a5b7e2694c1d8a0f3b5e7c9d2",
+  "message": "本轮全部 12 个 Key 已失效，系统正在自动补充新账号",
+  "dead": 12
+}
+去「账户」页保存 webhook 地址时，可以直接模拟推送这两种事件， 载荷与真实事件完全一致（只在 message 里标了「[模拟]」），方便你先把接收端调通。
+错误码
+出错时响应体是 {"error": "中文说明"}，状态码含义如下：
+
+字段	类型	说明
+400	参数错误	幂等键格式不对、区域非法、数量越界
+401	密钥无效	检查 X-API-Key，或密钥已被轮换
+402	积分不足	先兑换积分再提货
+403	账号被停用	联系管理员
+404	不存在	查询的资源不属于你，或已被删除
+409	状态冲突	库存不足、幂等键撞了别的订单；用同一个 id 重试
+410	兑换码过期	换一张
+429	过于频繁	降低频率后重试
+5xx	服务端错误	用同一个 client_order_id 重试是安全的
+遇到 5xx 或网络超时时，请用同一个 client_order_id 重试而不是换新的—— 订单可能已经成交，换 id 会变成第二笔。
+当前站点：https://kiro.ceo · 账号 maskenfreiheit

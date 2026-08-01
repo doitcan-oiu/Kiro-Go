@@ -603,3 +603,176 @@ func TestKiroappccNoKeysIsError(t *testing.T) {
 		t.Fatal("expected an error when claim returns no keys")
 	}
 }
+
+// --- kiro.ceo 客户端 ---
+
+// 核心语义：zone 必须显式带上。文档明确「不传 zone 默认只从美国区取号，想要欧洲区
+// 必须显式传 zone: eu」，所以漏传会静默买错区——那是花钱的错，必须锁死。
+func TestKiroceoClaimSendsZoneAndOrderID(t *testing.T) {
+	initTestConfig(t)
+
+	var gotAuth, gotPath string
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/my/stock" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"max":   50,
+				"zones": []map[string]interface{}{{"zone": "eu", "price": 15, "available": 50}},
+			})
+			return
+		}
+		gotAuth = r.Header.Get("X-API-Key")
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"client_order_id": gotBody["client_order_id"],
+			"purchased":       2,
+			"remaining":       4500,
+			"zone":            "eu",
+			"unit_price":      15,
+			"total_credits":   30,
+			"keys": []map[string]string{
+				{"key": "kiro-a", "account": "a@example.com"},
+				{"key": "kiro-b", "account": "b@example.com"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := newKiroceoClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x", Zone: "eu"})
+	if err != nil {
+		t.Fatalf("newKiroceoClient: %v", err)
+	}
+	claim, err := c.Claim(supplierClaimRequest{Count: 2, ClientOrderID: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if gotAuth != "usr-x" {
+		t.Errorf("X-API-Key = %q, want usr-x", gotAuth)
+	}
+	if gotPath != "/api/my/purchase" {
+		t.Errorf("path = %q, want /api/my/purchase", gotPath)
+	}
+	if got := gotBody["zone"]; got != "eu" {
+		t.Errorf("body zone = %v, want eu (europe requires an explicit zone)", got)
+	}
+	if got := gotBody["client_order_id"]; got != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("client_order_id = %v, want the caller's idempotency key verbatim", got)
+	}
+	if len(claim.Keys) != 2 {
+		t.Errorf("Keys = %v, want 2", claim.Keys)
+	}
+	// Zone 要回传，编排层据此决定导入区域。
+	if claim.Zone != "eu" {
+		t.Errorf("claim.Zone = %q, want eu", claim.Zone)
+	}
+	if claim.Spent != 30 {
+		t.Errorf("Spent = %v, want 30 (total_credits)", claim.Spent)
+	}
+}
+
+// zone 留空时按上游默认（us）处理，但仍显式传——不依赖上游的隐式默认。
+func TestKiroceoDefaultsToUSZone(t *testing.T) {
+	initTestConfig(t)
+
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/my/stock" {
+			json.NewEncoder(w).Encode(map[string]interface{}{"max": 10})
+			return
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"purchased": 1, "keys": []map[string]string{{"key": "kiro-a"}},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroceoClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x"})
+	if c.zone != config.SupplierZoneUS {
+		t.Fatalf("zone = %q, want us by default", c.zone)
+	}
+	if _, err := c.Claim(supplierClaimRequest{Count: 1}); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if got := gotBody["zone"]; got != "us" {
+		t.Errorf("body zone = %v, want an explicit us", got)
+	}
+}
+
+// 非法 zone 必须在构造时就拒绝：上游对非法 zone 直接 400，早失败比发一次必败请求好。
+func TestKiroceoRejectsInvalidZone(t *testing.T) {
+	if _, err := newKiroceoClient(config.SupplierConfig{
+		BaseURL: "https://kiro.ceo", ApiKey: "usr-x", Zone: "apac",
+	}); err == nil {
+		t.Fatal("expected an error for an unsupported zone")
+	}
+}
+
+// Stock 要取本区的 available，而不是跨区聚合的 max——采购按区隔离，
+// 用 max 夹取会放过一个本区必然缺货的请求。
+func TestKiroceoStockPrefersZoneAvailability(t *testing.T) {
+	initTestConfig(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"max": 100, // 跨区聚合
+			"zones": []map[string]interface{}{
+				{"zone": "us", "price": 20, "available": 95},
+				{"zone": "eu", "price": 15, "available": 3},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, _ := newKiroceoClient(config.SupplierConfig{BaseURL: srv.URL, ApiKey: "usr-x", Zone: "eu"})
+	stock, err := c.Stock()
+	if err != nil {
+		t.Fatalf("Stock: %v", err)
+	}
+	if stock != 3 {
+		t.Errorf("Stock() = %d, want 3 (the eu zone's availability, not max=100)", stock)
+	}
+
+	acc, err := c.Account()
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if !acc.HasPrice || acc.KeyPrice != 15 {
+		t.Errorf("KeyPrice = %v (has=%v), want the eu unit price 15", acc.KeyPrice, acc.HasPrice)
+	}
+}
+
+// zone → 导入区域的映射是这次需求的关键：买欧洲区的号必须以 eu-central-1 导入，
+// 否则 Key 带着错误区域进池，请求会打到错的 endpoint。
+func TestEffectiveImportRegionFollowsZone(t *testing.T) {
+	rc := config.ReplenishConfig{
+		Region: "ap-northeast-1", // 全局设置，分区供应商不应受它影响
+		Suppliers: map[string]config.SupplierConfig{
+			config.ReplenishProviderKiroceo: {Enabled: true, ApiKey: "usr-x", Zone: "eu"},
+			config.ReplenishProviderKiross:  {Enabled: true, BaseURL: "https://v", ApiKey: "usr-y"},
+		},
+	}
+
+	if got := rc.EffectiveImportRegion(config.ReplenishProviderKiroceo); got != "eu-central-1" {
+		t.Errorf("kiro.ceo eu import region = %q, want eu-central-1", got)
+	}
+	// 无区域概念的家沿用全局设置。
+	if got := rc.EffectiveImportRegion(config.ReplenishProviderKiross); got != "ap-northeast-1" {
+		t.Errorf("kiross import region = %q, want the global region", got)
+	}
+
+	rc.Suppliers[config.ReplenishProviderKiroceo] = config.SupplierConfig{
+		Enabled: true, ApiKey: "usr-x", Zone: "us",
+	}
+	if got := rc.EffectiveImportRegion(config.ReplenishProviderKiroceo); got != "us-east-1" {
+		t.Errorf("kiro.ceo us import region = %q, want us-east-1", got)
+	}
+
+	// zone 留空按 us 处理，而不是回落到全局区域。
+	rc.Suppliers[config.ReplenishProviderKiroceo] = config.SupplierConfig{Enabled: true, ApiKey: "usr-x"}
+	if got := rc.EffectiveImportRegion(config.ReplenishProviderKiroceo); got != "us-east-1" {
+		t.Errorf("kiro.ceo default import region = %q, want us-east-1", got)
+	}
+}

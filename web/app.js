@@ -3052,7 +3052,14 @@
   }
 
   // 各供应商的展示名。未知标识回退到原始 id，保证新增供应商也能显示。
-  const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io', kiroappcc: 'kiroapp.cc' };
+  const REPLENISH_PROVIDER_LABELS = { kiross: 'kiro.ss', kiroappio: 'kiroapp.io', kiroappcc: 'kiroapp.cc', kiroceo: 'kiro.ceo' };
+  // 区域的展示名。后端只给 us / eu 代号，这里译成人话，并在下拉里附上对应
+  // 的 AWS 区域，避免用户以为「选 eu」只影响价格而不影响导入区域。
+  // 区域显示名走 i18n，避免把中文写死在 JS 里（英文界面下会串语言）。
+  function replenishZoneLabel(z) {
+    const label = t('replenish.zone.' + z);
+    return label && label !== 'replenish.zone.' + z ? label : z;
+  }
   function replenishProviderLabel(p) { return REPLENISH_PROVIDER_LABELS[p] || p; }
 
   // renderReplenishSuppliers 为每家供应商渲染一个面板。
@@ -3080,6 +3087,24 @@
             + escapeHtml(t('replenish.register')) + '</button>'
         : '<span class="rp-note" title="' + escapeAttr(t('replenish.manualRegisterHint')) + '">'
             + escapeHtml(t('replenish.manualBadge')) + '</span>';
+
+      // 区域选择：只有带区域概念的供应商（后端在 zones 里给出可选项）才渲染。
+      // 这个选择同时决定「向哪个区下单」与「Key 以哪个 region 导入」，两者必须一致，
+      // 因此下拉旁的提示直接写出对应的 AWS 区域。
+      const zoneCtl = (s.zones && s.zones.length)
+        ? '<div class="rp-field">' +
+            '<span class="rp-label">' + escapeHtml(t('replenish.zone')) +
+              '<span class="rp-help" title="' + escapeAttr(t('replenish.zoneHint')) + '">?</span>' +
+            '</span>' +
+            '<select class="rp-input" data-replenish-field="zone">' +
+              s.zones.map(z =>
+                '<option value="' + escapeAttr(z.zone) + '"' +
+                  (z.zone === s.zone ? ' selected' : '') + '>' +
+                  escapeHtml(replenishZoneLabel(z.zone) + ' \u2192 ' + (z.region || '')) +
+                '</option>').join('') +
+            '</select>' +
+          '</div>'
+        : '';
 
       return '' +
       '<div class="rp-supplier' + (s.enabled ? ' is-on' : '') + '" data-replenish-provider="' + p + '">' +
@@ -3112,6 +3137,8 @@
             '<input class="rp-input" type="password" data-replenish-field="apiKey" value=""' +
               ' placeholder="' + escapeAttr(keyPlaceholder) + '" autocomplete="new-password" />' +
           '</div>' +
+
+          zoneCtl +
 
           '<label class="rp-count">' +
             '<span>' + escapeHtml(t('replenish.webhookCountShort')) + '</span>' +
@@ -3209,6 +3236,8 @@
       if (en) item.enabled = !!en.checked;
       const base = field('baseUrl');
       if (base) item.baseUrl = (base.value || '').trim();
+      const zoneEl = field('zone');
+      if (zoneEl) item.zone = zoneEl.value || '';
       const cnt = field('webhookCount');
       if (cnt) {
         const v = parseInt((cnt.value || '').trim(), 10);

@@ -637,5 +637,9 @@
   "replenish.runOk": "补号完成：提取 {0}，导入 {1}，跳过 {2}",
   "replenish.runFailed": "补号失败",
   "replenish.stateOn": "运行中",
-  "replenish.stateOff": "已停用"
+  "replenish.stateOff": "已停用",
+  "replenish.zone": "采购区域",
+  "replenish.zoneHint": "该供应商按区域严格隔离，不跨区补货。选定的区域同时决定 Key 导入账号池时使用的 AWS 区域（美国区→us-east-1，欧洲区→eu-central-1），不受上方「导入区域」影响。",
+  "replenish.zone.us": "美国区",
+  "replenish.zone.eu": "欧洲区"
 }

@@ -45,10 +45,27 @@ func replenishSupplierView(rc config.ReplenishConfig, provider string) map[strin
 		// 能力位：前端据此决定是否显示「注册回调」按钮。
 		"supportsWebhookAutoRegister": config.SupportsWebhookAutoRegister(provider),
 		"hasSecret":                   sc.WebhookSecret != "",
+		// 区域能力位与当前选择。有区域概念的家（kiro.ceo）必须按区采购，
+		// importRegion 让面板直接显示「这批号会以哪个区域导入」，避免用户
+		// 需要自己记住 us→us-east-1 的映射。
+		"supportsZone": config.SupportsZone(provider),
 		// 该家最近一次收到推送。
 		"lastWebhookAt":  sc.LastWebhookAt,
 		"lastWebhookMsg": sc.LastWebhookMsg,
 	}
+	if config.SupportsZone(provider) {
+		view["zone"] = rc.EffectiveZone(provider)
+		view["importRegion"] = rc.EffectiveImportRegion(provider)
+		zones := make([]map[string]string, 0, len(config.SupplierZones()))
+		for _, z := range config.SupplierZones() {
+			zones = append(zones, map[string]string{
+				"zone":   z,
+				"region": config.SupplierZoneRegion(z),
+			})
+		}
+		view["zones"] = zones
+	}
+
 	// 回调地址要等公网基地址与密钥都就绪才有意义。字段名与注册/重置接口的返回
 	// 保持一致（callbackUrl），前端拿到哪个都是同一个语义。
 	if rc.PublicBaseURL != "" && sc.WebhookSecret != "" {
@@ -102,6 +119,7 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 			BaseURL      *string `json:"baseUrl,omitempty"`
 			ApiKey       *string `json:"apiKey,omitempty"`
 			WebhookCount *int    `json:"webhookCount,omitempty"`
+			Zone         *string `json:"zone,omitempty"`
 		} `json:"suppliers,omitempty"`
 
 		Region           *string `json:"region,omitempty"`
@@ -132,11 +150,30 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": "unknown supplier: " + rawProvider})
 			return
 		}
+		// zone 只对有区域概念的供应商有意义；非法值直接拒绝而不是静默按默认区
+		// 处理——各区单价不同（kiro.ceo: us 20 / eu 15），静默改区等于花错钱。
+		if in.Zone != nil && strings.TrimSpace(*in.Zone) != "" {
+			if !config.SupportsZone(provider) {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": "supplier " + provider + " has no zone selection",
+				})
+				return
+			}
+			if config.NormalizeSupplierZone(*in.Zone) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": "invalid zone for " + provider + ": " + *in.Zone,
+				})
+				return
+			}
+		}
 		updates[provider] = config.SupplierUpdate{
 			Enabled:      in.Enabled,
 			BaseURL:      in.BaseURL,
 			ApiKey:       in.ApiKey,
 			WebhookCount: in.WebhookCount,
+			Zone:         in.Zone,
 		}
 	}
 

@@ -637,5 +637,9 @@
   "replenish.runOk": "Done: claimed {0}, imported {1}, skipped {2}",
   "replenish.runFailed": "Replenish failed",
   "replenish.stateOn": "Active",
-  "replenish.stateOff": "Off"
+  "replenish.stateOff": "Off",
+  "replenish.zone": "Purchase zone",
+  "replenish.zoneHint": "This supplier isolates stock per zone and never substitutes across zones. The selected zone also sets the AWS region used when importing its keys (US→us-east-1, EU→eu-central-1), overriding the shared import region above.",
+  "replenish.zone.us": "US",
+  "replenish.zone.eu": "Europe"
 }

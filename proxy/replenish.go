@@ -55,6 +55,9 @@ type supplierClaimRequest struct {
 	Count         int
 	ClientOrderID string
 	BatchOrderID  string
+	// Zone 覆盖该家配置的采购区域，用于「按推送里的 zone 买同区的号」。
+	// 空串表示沿用该家配置；无区域概念的供应商忽略。
+	Zone string
 }
 
 // supplierClaim 是一次提取的统一结果。
@@ -69,6 +72,10 @@ type supplierClaim struct {
 	Remaining float64
 	Spent     float64
 	OrderID   string
+	// Zone 是本单实际成交的采购区域（仅有区域概念的供应商填写）。
+	// 编排层据此决定导入区域：买的是欧洲区就必须按欧洲区导入，否则 Key 会带着
+	// 错误区域进池。空串表示该家无区域概念，沿用全局设置。
+	Zone string
 }
 
 // PurchasedCount 返回本次实际出 Key 数量，优先用供应商自报值。
@@ -101,6 +108,8 @@ func newReplenishSupplier(provider string, sc config.SupplierConfig) (replenishS
 		return newKiroappioClient(sc)
 	case config.ReplenishProviderKiroappcc:
 		return newKiroappccClient(sc)
+	case config.ReplenishProviderKiroceo:
+		return newKiroceoClient(sc)
 	default:
 		return nil, fmt.Errorf("unknown replenish provider %q", provider)
 	}
@@ -179,6 +188,8 @@ type replenishResult struct {
 	Spent     float64 `json:"spent,omitempty"`    // 本次实际扣费（仅阶梯定价的供应商提供）
 	OrderID   string  `json:"orderId,omitempty"`  // 本次订单号
 	Provider  string  `json:"provider,omitempty"` // 本次使用的供应商
+	Zone      string  `json:"zone,omitempty"`     // 本单成交的采购区域（仅有区域概念的供应商）
+	Region    string  `json:"region,omitempty"`   // 导入这批 Key 实际使用的区域
 	Summary   string  `json:"summary,omitempty"`  // 人类可读摘要
 }
 
@@ -355,24 +366,38 @@ func (h *Handler) claimAndImport(client replenishSupplier, rc config.ReplenishCo
 		return nil, err
 	}
 
+	provider := client.ProviderName()
 	res := &replenishResult{
 		// Purchased 取供应商自报的出 Key 数，缺失时回退到实际 Key 条数。
 		Purchased: claim.PurchasedCount(),
 		Remaining: claim.Remaining,
 		Spent:     claim.Spent,
 		OrderID:   claim.OrderID,
-		Provider:  client.ProviderName(),
+		Provider:  provider,
+		Zone:      claim.Zone,
+	}
+
+	// 导入区域必须跟随采购区域：分区供应商（kiro.ceo）的 eu 号若按 us 导入，
+	// Key 会带着错误区域进池而不可用。优先用上游在响应里自报的 zone（权威值，
+	// 可能与请求不同），缺失时回落到配置里该家的采购区。
+	importRegion := rc.EffectiveImportRegion(provider)
+	if z := config.SupplierZoneRegion(claim.Zone); z != "" {
+		importRegion = z
 	}
 
 	// 交给既有的批量导入逻辑（去重 + 区域探测 + 信息刷新 + 池重载）。
 	if len(claim.Keys) > 0 {
-		summary := h.ImportApiKeys(strings.Join(claim.Keys, "\n"), rc.Region, "", "")
+		summary := h.ImportApiKeys(strings.Join(claim.Keys, "\n"), importRegion, "", "")
 		res.Imported = summary.Imported
 		res.Skipped = summary.Skipped
 	}
 
 	res.Summary = fmt.Sprintf("provider=%s purchased=%d imported=%d skipped=%d remaining=%.2f",
 		res.Provider, res.Purchased, res.Imported, res.Skipped, res.Remaining)
+	// 分区供应商把区域也写进摘要，便于事后核对「这批号是哪个区的」。
+	if claim.Zone != "" {
+		res.Summary += fmt.Sprintf(" zone=%s region=%s", claim.Zone, importRegion)
+	}
 	// 阶梯定价的供应商自报本单扣费，附到摘要里让用户看到真实花费。
 	if claim.Spent > 0 {
 		res.Summary += fmt.Sprintf(" spent=%.2f", claim.Spent)
@@ -537,6 +562,9 @@ type supplierWebhookEvent struct {
 	// kiroapp.cc 的推送不含该字段，缺失时按配置量下单；显式 0 表示本批无 Key。
 	NewKeys *int `json:"new_keys"`
 	Dead    int  `json:"dead"`
+	// Zone 是补货事件的区域（us / eu），仅分区供应商（kiro.ceo）会带。
+	// 用于与本地配置的采购区比对：区域不符时不下单，避免买到用户没选的区。
+	Zone string `json:"zone"`
 }
 
 // idempotencyKey 返回本次推送的幂等键，兼容两家供应商的字段名。
@@ -624,6 +652,19 @@ func (h *Handler) handleProviderWebhookEvent(provider string, ev supplierWebhook
 			summary := fmt.Sprintf("webhook new_keys_available 已忽略：供应商 %s 当前已停用", provider)
 			logger.Infof("[Replenish] %s", summary)
 			return summary, nil
+		}
+
+		// 分区供应商：推送的区域必须与本地配置的采购区一致才下单。
+		//
+		// 各区单价不同且严格隔离（文档：不跨区补货），所以拿 A 区的到货通知去买
+		// B 区既买不到、也可能在用户没选的区上花钱。区域不符只记录不下单。
+		if evZone := config.NormalizeSupplierZone(ev.Zone); evZone != "" && config.SupportsZone(provider) {
+			if want := rc.EffectiveZone(provider); want != "" && evZone != want {
+				summary := fmt.Sprintf("webhook 已忽略：%s 推送的是 %s 区，本地配置采购 %s 区",
+					provider, evZone, want)
+				logger.Infof("[Replenish] %s", summary)
+				return summary, nil
+			}
 		}
 
 		// 下单量取该家自己配置的数量（各家可配不同值）。
