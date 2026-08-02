@@ -1,8 +1,16 @@
 // Theme preference: system → light → dark, persisted in localStorage.
 //
-// The token layer (styles/tokens.css) keys off `.dark` on <html>, plus a
-// `data-theme-pref` attribute so the toggle button can show which of the three
-// states is active (not merely which one is resolved).
+// The token layer (styles/tokens.css) puts the dark palette on bare `:root` and
+// overrides it under `.light`, so **`.light` is the class that actually does
+// anything**. Toggling only `.dark` (as this file used to) left the light track
+// unreachable: every preference rendered dark. `.dark` is still written because
+// index.html ships it in the static markup and the pre-paint script sets it, but
+// no CSS rule matches it.
+//
+// Keep in sync with the inline pre-paint script in index.html.
+//
+// `data-theme-pref` is also written so the toggle button can show which of the
+// three states is active (not merely which one is resolved).
 import { ref } from 'vue'
 
 const STORAGE_KEY = 'kiro_theme'
@@ -36,6 +44,7 @@ function apply(pref) {
   resolvedTheme.value = resolved
   const root = document.documentElement
   root.classList.toggle('dark', resolved === 'dark')
+  root.classList.toggle('light', resolved === 'light')
   root.dataset.themePref = pref
   root.style.colorScheme = resolved
 }

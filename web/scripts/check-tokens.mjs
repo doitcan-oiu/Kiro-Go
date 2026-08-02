@@ -7,19 +7,18 @@
 //   2. A token exists in :root (dark) but is never overridden in .light, so the
 //      light theme silently inherits a dark-mode value.
 //
-// Tokens that are deliberately scoped inside a utility (set locally with a
-// var(..., fallback)) are allowed via LOCAL_TOKENS.
+// LOCAL_TOKENS exempts tokens that are deliberately declared inside a utility
+// and read with a var(..., fallback). Keep it empty unless such a token really
+// exists: the exemption suppresses failure mode 1 above, and it is only sound
+// when every read site has a fallback. It previously held three --glass-sheen-*
+// names that no longer existed anywhere, which is how `.light` came to read an
+// undefined --glass-sheen-angle (with no fallback) in five gradients unnoticed.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC = new URL('../src/', import.meta.url).pathname
 
-// Set per-utility rather than globally; each read site supplies a fallback.
-const LOCAL_TOKENS = new Set([
-  '--glass-sheen-strength',
-  '--glass-sheen-opacity',
-  '--glass-sheen-angle',
-])
+const LOCAL_TOKENS = new Set([])
 
 // Tokens intentionally identical across themes (geometry, timing, stacking).
 const THEME_AGNOSTIC = /^--(space|radius|dur|ease|z|sidebar|topbar|font|text|breakpoint)/
@@ -92,8 +91,32 @@ for (const token of rootTokens) {
   }
 }
 
+// ─── Theme class contract ──────────────────────────────────────────────────
+// The two checks above compare the CSS against itself, so they cannot see the
+// failure that actually shipped: `lib/theme.js` toggled only `.dark` while the
+// light palette lives under `.light`. Every preference rendered dark and no
+// token was missing. Whichever class the stylesheet keys off must be one the
+// runtime writes, so assert across the JS/CSS boundary.
+const themeJs = readFileSync(join(SRC, 'lib/theme.js'), 'utf8')
+const prePaintHtml = readFileSync(new URL('../index.html', import.meta.url).pathname, 'utf8')
+
+// Theme classes the stylesheet actually keys off, as top-level selectors.
+const themedSelectors = [...tokensCss.matchAll(/^\.([a-z-]+)\s*\{/gim)].map((m) => m[1])
+for (const cls of new Set(themedSelectors)) {
+  const writes = (src) => new RegExp(`classList\\.(?:toggle|add|remove)\\(\\s*['"]${cls}['"]`).test(src)
+  if (!writes(themeJs)) {
+    problems.push(`theme class .${cls} styled in tokens.css but never written by lib/theme.js`)
+  }
+  // The pre-paint script runs before Vue mounts; if it disagrees with theme.js
+  // the page paints one theme and then flips to the other.
+  if (!writes(prePaintHtml)) {
+    problems.push(`theme class .${cls} written by lib/theme.js but not by the pre-paint script in index.html`)
+  }
+}
+
 console.log(`:root tokens: ${rootTokens.size}   .light overrides: ${lightTokens.size}`)
 console.log(`var() reads: ${reads.size}`)
+console.log(`theme classes: ${[...new Set(themedSelectors)].map((c) => `.${c}`).join(' ') || '(none)'}`)
 
 if (problems.length) {
   console.error(`\n${problems.length} token problem(s):`)
