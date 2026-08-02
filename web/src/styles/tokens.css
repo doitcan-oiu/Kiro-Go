@@ -1,0 +1,481 @@
+/* ============================================================================
+   ClauseOS design tokens — §2 色彩系统, §3 Liquid Glass, §5 间距, §6 圆角/阴影, §8 动效
+   Dark mode is the default (`:root`); `.light` on <html> flips to the light track.
+   Every value here is consumed either directly or through the Tailwind @theme
+   bridge in index.css, so there is exactly one source of truth per token.
+   ========================================================================= */
+
+:root {
+  color-scheme: dark;
+
+  /* ═══ 色彩 (§2.1 暗色模式) ═══ */
+  --bg-primary: #0a0b0f;
+  --bg-secondary: #111318;
+  /* Blue Charcoal (§2.3) — used for raised opaque content surfaces so the
+     content layer reads as a distinct plane from the glass navigation layer. */
+  --bg-elevated: #1a1d23;
+  --bg-sunken: #06070a;
+
+  --accent-primary: #00ff9d;
+  /* Harmony Green (§2.3): the calmer green for large saturated fills where
+     #00FF9D at full area would fatigue the eye. */
+  --accent-primary-muted: #00c897;
+  --accent-secondary: #3b82f6;
+  --accent-soft: rgb(0 255 157 / 0.08);
+  --accent-soft-strong: rgb(0 255 157 / 0.16);
+  /* 强调色辉光：用于开关滑块、激活指示等小面积发光元素。 */
+  --accent-glow: rgb(0 255 157 / 0.45);
+
+  --semantic-success: #10b981;
+  --semantic-warning: #f59e0b;
+  --semantic-error: #ef4444;
+  --semantic-info: #3b82f6;
+
+  /* ═══ 图表序列色板 ═══
+     多线折线图需要彼此可区分的序列色。这里刻意不复用语义色（success/warning/
+     error）：图表里「第 3 条线」不代表警告，借用语义色会让读者误读成状态。
+
+     取色约束：
+       1. 相邻两色的色相至少隔开 40°，避免细线在 1px 宽度下难以分辨；
+       2. 亮度控制在同一档，让任一条线都不会因为更亮而显得「更重要」；
+       3. 第一条沿用主强调色，与仪表盘其余部分呼应。
+     6 条之后由 trafficByModel 折叠为 other，因此只需 6 色 + 1 中性色。 */
+  --chart-1: #00ff9d;
+  --chart-2: #38bdf8;
+  --chart-3: #c084fc;
+  --chart-4: #fbbf24;
+  --chart-5: #fb7185;
+  --chart-6: #34d399;
+  /* other（折叠序列）与坐标网格：刻意低对比，不与真实序列争夺注意力。 */
+  --chart-other: #6b7280;
+  --chart-grid: rgb(255 255 255 / 0.06);
+  /* 悬停竖线：比网格线亮一档，能看清但不盖住数据点。 */
+  --chart-crosshair: rgb(255 255 255 / 0.18);
+
+  --text-primary: #e5e7eb;
+  --text-secondary: #9ca3af;
+  --text-tertiary: #6b7280;
+  --text-inverse: #0a0b0f;
+
+  --border-glass: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.14);
+  --border-active: rgb(0 255 157 / 0.25);
+
+  /* ═══ Liquid Glass 四级材质 (§3.1) ═══
+     模糊半径显著大于规范表里的 12/20/16/24px。规范自身的参考来源正是 visionOS
+     Glass 与 WWDC25 Liquid Glass，而那套材质依赖大半径折射：12px 在深色背景上
+     只会得到一块「半透明灰片」，完全看不出玻璃。这里按实际观感取值，并把
+     saturate/brightness 一起提高，让透过来的环境色真正被折射出来。
+
+     `-bg` 是渐变（background-image）而不是纯色：玻璃自身有厚度，上薄下厚，
+     纯色填充会让材质显得像一张平贴的膜。 */
+  --glass-thin-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.075) 0%,
+    rgb(255 255 255 / 0.04) 100%
+  );
+  --glass-thin-filter: blur(20px) saturate(180%) brightness(1.08);
+  --glass-thin-border: rgb(255 255 255 / 0.1);
+
+  --glass-regular-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.1) 0%,
+    rgb(255 255 255 / 0.055) 100%
+  );
+  --glass-regular-filter: blur(40px) saturate(190%) brightness(1.1);
+  --glass-regular-border: rgb(255 255 255 / 0.14);
+
+  --glass-clear-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.05) 0%,
+    rgb(255 255 255 / 0.022) 100%
+  );
+  --glass-clear-filter: blur(28px) saturate(170%) brightness(1.06);
+  --glass-clear-border: rgb(255 255 255 / 0.08);
+
+  --glass-thick-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.14) 0%,
+    rgb(255 255 255 / 0.08) 100%
+  );
+  --glass-thick-filter: blur(64px) saturate(200%) brightness(1.14);
+  --glass-thick-border: rgb(255 255 255 / 0.2);
+
+  /* ═══ 折射边缘 (第 4 层) ═══
+     这几层 inset 阴影才是「玻璃感」的真正来源，缺了它们再大的 blur 也只是磨砂：
+       1. 顶边亮线   — 光从上方入射，玻璃上沿的镜面反射（最关键的一条）
+       2. 内圈细描边 — 材质自身厚度形成的折射轮廓
+       3. 底边回弹光 — 下方环境光在玻璃内壁的二次反射
+     材质越厚，这三者越强。 */
+  --glass-edge-thin:
+    inset 0 1px 0 rgb(255 255 255 / 0.22), inset 0 0 0 1px rgb(255 255 255 / 0.035),
+    inset 0 -1px 1px rgb(255 255 255 / 0.04);
+  --glass-edge-regular:
+    inset 0 1px 0 rgb(255 255 255 / 0.3), inset 0 0 0 1px rgb(255 255 255 / 0.05),
+    inset 0 -1px 1px rgb(255 255 255 / 0.055);
+  --glass-edge-clear:
+    inset 0 1px 0 rgb(255 255 255 / 0.16), inset 0 0 0 1px rgb(255 255 255 / 0.025);
+  --glass-edge-thick:
+    inset 0 1px 0 rgb(255 255 255 / 0.4), inset 0 0 0 1px rgb(255 255 255 / 0.07),
+    inset 0 -1px 2px rgb(255 255 255 / 0.07);
+
+  /* 悬停：材质变厚 + 边框变亮（§8.2 背景 +0.04 / 边框 +0.06）。 */
+  --glass-hover-tint: rgb(255 255 255 / 0.055);
+  --glass-hover-border: rgb(255 255 255 / 0.2);
+
+  /* ═══ 镜面掠光 (第 3 层) ═══
+     光源假定在左上（125deg 与顶边亮线的入射方向一致）。渐变在 0%→38% 迅速
+     衰减到全透明，62%→100% 再微微回升：前者是主高光，后者是玻璃另一侧边缘
+     的余光。中间那段必须完全透明，否则整块材质会均匀发白、失去「一道光扫
+     过」的方向感。材质越厚，掠光越强。 */
+  --glass-sheen-thin: linear-gradient(
+    125deg,
+    rgb(255 255 255 / 0.07) 0%,
+    rgb(255 255 255 / 0) 38%,
+    rgb(255 255 255 / 0) 62%,
+    rgb(255 255 255 / 0.032) 100%
+  );
+  --glass-sheen-regular: linear-gradient(
+    125deg,
+    rgb(255 255 255 / 0.1) 0%,
+    rgb(255 255 255 / 0) 38%,
+    rgb(255 255 255 / 0) 62%,
+    rgb(255 255 255 / 0.045) 100%
+  );
+  --glass-sheen-clear: linear-gradient(
+    125deg,
+    rgb(255 255 255 / 0.05) 0%,
+    rgb(255 255 255 / 0) 40%,
+    rgb(255 255 255 / 0) 100%
+  );
+  --glass-sheen-thick: linear-gradient(
+    125deg,
+    rgb(255 255 255 / 0.14) 0%,
+    rgb(255 255 255 / 0) 36%,
+    rgb(255 255 255 / 0) 62%,
+    rgb(255 255 255 / 0.06) 100%
+  );
+
+  /* 无法折射时的退化填充（窄屏 / 降低透明度 / 浏览器不支持）。 */
+  --glass-fallback-bg: color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-elevated));
+
+  /* ═══ 危险态玻璃（已禁用凭证）═══
+     与四级中性玻璃同构（底色渐变 + 折射 + 掠光 + 内嵌边缘），只把色相换成红。
+     这样禁用卡片仍然是「同一种材质」，只是染了色，不会看起来像另一套组件。
+
+     不透明度取值比中性玻璃高一档：禁用是需要一眼看见的状态，太淡就白做了；
+     但仍保持在能透出背景光场的范围内，避免变成一块实心红板。 */
+  --glass-danger-bg: linear-gradient(
+    160deg,
+    rgb(239 68 68 / 0.2) 0%,
+    rgb(239 68 68 / 0.1) 100%
+  );
+  --glass-danger-filter: blur(24px) saturate(150%) brightness(1.04);
+  --glass-danger-border: rgb(239 68 68 / 0.34);
+  --glass-sheen-danger: linear-gradient(
+    125deg,
+    rgb(255 255 255 / 0.09) 0%,
+    rgb(255 255 255 / 0) 40%,
+    rgb(255 255 255 / 0) 64%,
+    rgb(255 255 255 / 0.04) 100%
+  );
+  --glass-edge-danger:
+    inset 0 1px 0 rgb(255 190 190 / 0.24), inset 0 0 0 1px rgb(239 68 68 / 0.1),
+    inset 0 -1px 1px rgb(239 68 68 / 0.08);
+  /* 退化填充同样保持红色调，否则降级后禁用状态会完全消失。 */
+  --glass-danger-fallback-bg: color-mix(in srgb, var(--bg-secondary) 78%, #ef4444);
+
+  /* Opaque content-layer fills (§3.3: 内容层不使用玻璃材质) */
+  --surface-content: #111318;
+  --surface-row-hover: rgb(255 255 255 / 0.03);
+  --surface-head: rgb(255 255 255 / 0.03);
+  --surface-input: rgb(255 255 255 / 0.04);
+  --surface-divider: rgb(255 255 255 / 0.04);
+
+  /* 外壳内部的导航栏与顶栏底色。
+     刻意不用玻璃：外壳自身已经是一层玻璃（浮在环境光场之上），在它内部再叠
+     玻璃会违反 §3.3 的「玻璃不叠玻璃」，且两层模糊叠加后边界会糊成一团。
+     这里用极淡的白色叠加，让导航区比内容区略微「抬起」一档。 */
+  --surface-rail: rgb(255 255 255 / 0.03);
+  --surface-topbar: rgb(255 255 255 / 0.02);
+
+  /* ═══ 阴影 (§6.2) ═══ */
+  --sh-sm: 0 1px 3px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / 0.03);
+  --sh-md: 0 4px 16px rgb(0 0 0 / 0.35), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --sh-lg: 0 8px 32px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --sh-glow: 0 0 20px rgb(0 255 157 / 0.15), 0 4px 16px rgb(0 0 0 / 0.3);
+  --sh-glow-strong: 0 0 30px rgb(0 255 157 / 0.28), 0 4px 16px rgb(0 0 0 / 0.3);
+  --sh-3d: 0 2px 6px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.3);
+
+  /* ═══ 字体 (§4.1) ═══ */
+  --font-brand-stack: 'Urbanist Variable', 'Urbanist', -apple-system,
+    'SF Pro Display', 'Segoe UI', sans-serif;
+  --font-ui-stack: 'Inter Variable', 'Inter', -apple-system, 'SF Pro Text',
+    'Segoe UI', 'Noto Sans SC', sans-serif;
+  --font-mono-stack: 'SFMono-Regular', ui-monospace, 'JetBrains Mono', Menlo,
+    Consolas, monospace;
+
+  /* ═══ 动效 (§8.1) ═══ */
+  --dur-fast: 150ms;
+  --dur-normal: 250ms;
+  --dur-slow: 400ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-quad: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+  /* ═══ 布局 (§5.2) ═══ */
+  --sidebar-w: 280px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 64px;
+
+  /* ═══ 层叠顺序 ═══
+     One place to reason about stacking. Popovers sit above modals because a
+     <select> inside a dialog must still open over the dialog surface. */
+  --z-sticky: 20;
+  --z-sidebar: 30;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-popover: 60;
+  --z-toast: 70;
+}
+
+/* ─── §2.2 亮色模式 ─────────────────────────────────────────────────────── */
+.light {
+  color-scheme: light;
+
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #eef0f3;
+
+  /* 亮底需要更深的绿以满足 4.5:1 对比度 (§2.2) */
+  --accent-primary: #059669;
+  --accent-primary-muted: #047857;
+  --accent-secondary: #2563eb;
+  --accent-soft: rgb(5 150 105 / 0.09);
+  --accent-soft-strong: rgb(5 150 105 / 0.16);
+  --accent-glow: rgb(5 150 105 / 0.4);
+
+  --semantic-success: #059669;
+  --semantic-warning: #b45309;
+  --semantic-error: #dc2626;
+  --semantic-info: #2563eb;
+
+  /* 亮底图表色阶：整体压深、提饱和。暗底用的亮色（#00ff9d 一类）在白底上
+     对比度不足，细折线几乎看不见，因此不能两套主题共用同一批值。 */
+  --chart-1: #059669;
+  --chart-2: #2563eb;
+  --chart-3: #d97706;
+  --chart-4: #7c3aed;
+  --chart-5: #db2777;
+  --chart-6: #0891b2;
+  --chart-other: #9ca3af;
+  --chart-grid: rgb(16 24 40 / 0.07);
+  --chart-crosshair: rgb(16 24 40 / 0.2);
+
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #9ca3af;
+  --text-inverse: #ffffff;
+
+  --border-glass: rgb(0 0 0 / 0.06);
+  --border-strong: rgb(0 0 0 / 0.12);
+  --border-active: rgb(5 150 105 / 0.3);
+
+  /* §3.2 亮色模式对应的材质值。
+     亮底玻璃的观感来自「透过去的颜色被提亮 + 去饱和」，所以 brightness 只微调，
+     靠底色不透明度控制厚度；给太高就会变成一块白色实心板，玻璃感全失。 */
+  --glass-thin-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.58) 0%,
+    rgb(255 255 255 / 0.42) 100%
+  );
+  --glass-thin-filter: blur(20px) saturate(150%) brightness(1.04);
+  --glass-thin-border: rgb(255 255 255 / 0.75);
+
+  --glass-regular-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.66) 0%,
+    rgb(255 255 255 / 0.5) 100%
+  );
+  --glass-regular-filter: blur(40px) saturate(160%) brightness(1.05);
+  --glass-regular-border: rgb(255 255 255 / 0.85);
+
+  --glass-clear-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.36) 0%,
+    rgb(255 255 255 / 0.24) 100%
+  );
+  --glass-clear-filter: blur(28px) saturate(145%) brightness(1.03);
+  --glass-clear-border: rgb(255 255 255 / 0.65);
+
+  --glass-thick-bg: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.78) 0%,
+    rgb(255 255 255 / 0.62) 100%
+  );
+  --glass-thick-filter: blur(64px) saturate(170%) brightness(1.06);
+  --glass-thick-border: rgb(255 255 255 / 0.92);
+
+  /* 亮底：顶边走白色高光，底边改用极淡的冷色暗线。
+     白卡叠白底若只有白高光会糊成一片，必须有一条深色折射轮廓压住下沿。 */
+  --glass-edge-thin:
+    inset 0 1px 0 rgb(255 255 255 / 0.85), inset 0 0 0 1px rgb(255 255 255 / 0.4),
+    inset 0 -1px 1px rgb(16 24 40 / 0.035);
+  --glass-edge-regular:
+    inset 0 1px 0 rgb(255 255 255 / 0.95), inset 0 0 0 1px rgb(255 255 255 / 0.5),
+    inset 0 -1px 1px rgb(16 24 40 / 0.045);
+  --glass-edge-clear:
+    inset 0 1px 0 rgb(255 255 255 / 0.7), inset 0 0 0 1px rgb(255 255 255 / 0.3),
+    inset 0 -1px 1px rgb(16 24 40 / 0.025);
+  --glass-edge-thick:
+    inset 0 1px 0 rgb(255 255 255 / 1), inset 0 0 0 1px rgb(255 255 255 / 0.6),
+    inset 0 -1px 2px rgb(16 24 40 / 0.055);
+
+  --glass-hover-tint: rgb(255 255 255 / 0.5);
+  --glass-hover-border: rgb(255 255 255 / 0.98);
+
+  /* 亮底掠光：强度比暗底高一档（白对白需要更大反差才看得见），但收窄扫光
+     宽度，避免整块卡片泛白而丢掉「透」的观感。 */
+  --glass-sheen-thin: linear-gradient(
+    var(--glass-sheen-angle),
+    rgb(255 255 255 / 0.55) 0%,
+    rgb(255 255 255 / 0) 34%,
+    rgb(255 255 255 / 0) 100%
+  );
+  --glass-sheen-regular: linear-gradient(
+    var(--glass-sheen-angle),
+    rgb(255 255 255 / 0.7) 0%,
+    rgb(255 255 255 / 0) 38%,
+    rgb(255 255 255 / 0) 64%,
+    rgb(255 255 255 / 0.28) 100%
+  );
+  --glass-sheen-clear: linear-gradient(
+    var(--glass-sheen-angle),
+    rgb(255 255 255 / 0.4) 0%,
+    rgb(255 255 255 / 0) 32%,
+    rgb(255 255 255 / 0) 100%
+  );
+  --glass-sheen-thick: linear-gradient(
+    var(--glass-sheen-angle),
+    rgb(255 255 255 / 0.85) 0%,
+    rgb(255 255 255 / 0.2) 26%,
+    rgb(255 255 255 / 0) 58%,
+    rgb(255 255 255 / 0.35) 100%
+  );
+
+  --glass-fallback-bg: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-sunken));
+
+  /* 亮底禁用态：白底上要靠「更饱和的红」而不是「更淡的红」才看得出来，
+     浅到 0.06 的红在白背景上会被完全吃掉。 */
+  --glass-danger-bg: linear-gradient(
+    160deg,
+    rgb(254 226 226 / 0.92) 0%,
+    rgb(254 202 202 / 0.72) 100%
+  );
+  --glass-danger-filter: blur(20px) saturate(150%) brightness(1.01);
+  --glass-danger-border: rgb(220 38 38 / 0.28);
+  --glass-edge-danger:
+    inset 0 1px 0 rgb(255 255 255 / 0.8), inset 0 0 0 1px rgb(255 255 255 / 0.35),
+    inset 0 -1px 1px rgb(220 38 38 / 0.1);
+  --glass-sheen-danger: linear-gradient(
+    var(--glass-sheen-angle),
+    rgb(255 255 255 / 0.6) 0%,
+    rgb(255 255 255 / 0.16) 30%,
+    rgb(255 255 255 / 0) 60%,
+    rgb(255 255 255 / 0.1) 100%
+  );
+  --glass-danger-fallback-bg: #fee2e2;
+
+  --surface-content: #ffffff;
+  --surface-row-hover: rgb(0 0 0 / 0.025);
+  --surface-head: rgb(0 0 0 / 0.03);
+  --surface-input: rgb(255 255 255 / 0.9);
+  --surface-divider: rgb(0 0 0 / 0.06);
+
+  /* 亮色下外框与内容区同为白，靠 --bg-primary 的浅灰衬底 + 边框区分层次；
+     导航列稍微压深一点，让侧栏与内容区不至于连成一片白。 */
+  --surface-rail: #fbfcfd;
+  --surface-topbar: rgb(255 255 255 / 0.86);
+
+  --sh-sm: 0 1px 3px rgb(16 24 40 / 0.06), 0 1px 2px rgb(16 24 40 / 0.04);
+  --sh-md: 0 4px 16px rgb(16 24 40 / 0.08), 0 2px 4px rgb(16 24 40 / 0.04);
+  --sh-lg: 0 8px 32px rgb(16 24 40 / 0.12), 0 4px 8px rgb(16 24 40 / 0.05);
+  --sh-glow: 0 0 18px rgb(5 150 105 / 0.18), 0 4px 12px rgb(16 24 40 / 0.08);
+  --sh-glow-strong: 0 0 28px rgb(5 150 105 / 0.3), 0 4px 12px rgb(16 24 40 / 0.1);
+  --sh-3d: 0 2px 6px rgb(16 24 40 / 0.1), 0 8px 24px rgb(16 24 40 / 0.08);
+}
+
+/* ============================================================================
+   环境光背景（玻璃的折射基底）
+
+   这一层是 Liquid Glass 成立的前提，不是装饰。backdrop-filter 只能模糊它背后
+   已经存在的像素：如果背后是一块纯 #0a0b0f，blur(64px) 的结果仍然是 #0a0b0f，
+   材质在视觉上就完全消失了——之前的版本正是这个问题（色斑只有 5–8% 不透明度，
+   等于没有基底）。
+
+   因此这里放置高饱和度、大面积的色团，让玻璃有东西可折射；不透明度提高到
+   0.16–0.34，并让色团缓慢漂移，使玻璃边缘的高光随之变化。
+   ========================================================================= */
+body::before {
+  content: '';
+  position: fixed;
+  /* 负 inset：色团中心可以落在视口外，避免边缘出现硬切断。 */
+  inset: -20%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 46% at 18% 12%, rgb(0 255 157 / 0.3), transparent 62%),
+    radial-gradient(circle 42% at 84% 16%, rgb(59 130 246 / 0.28), transparent 62%),
+    radial-gradient(circle 50% at 72% 88%, rgb(0 200 151 / 0.26), transparent 64%),
+    radial-gradient(circle 38% at 28% 82%, rgb(99 102 241 / 0.22), transparent 60%),
+    radial-gradient(circle 34% at 50% 46%, rgb(16 185 129 / 0.16), transparent 66%);
+  /* 30% 的柔化把色团之间的接缝抹掉，得到连续的光场而不是五个圆斑。 */
+  filter: blur(56px) saturate(135%);
+  animation: ambient-drift 44s ease-in-out infinite alternate;
+}
+
+/* 第二层：细密噪点。纯渐变在大面积浅色玻璃下会出现 banding（色阶断层），
+   叠一层极淡的噪点可以打散它，同时给材质一点「实体感」。 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.035;
+  /* 内联 SVG feTurbulence：不需要额外请求一张纹理图。 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.light body::before {
+  background:
+    radial-gradient(circle 46% at 18% 12%, rgb(5 150 105 / 0.26), transparent 62%),
+    radial-gradient(circle 42% at 84% 16%, rgb(37 99 235 / 0.22), transparent 62%),
+    radial-gradient(circle 50% at 72% 88%, rgb(13 148 136 / 0.22), transparent 64%),
+    radial-gradient(circle 38% at 28% 82%, rgb(79 70 229 / 0.16), transparent 60%),
+    radial-gradient(circle 34% at 50% 46%, rgb(5 150 105 / 0.12), transparent 66%);
+  filter: blur(64px) saturate(125%);
+}
+
+.light body::after {
+  opacity: 0.02;
+}
+
+/* 缓慢漂移：让玻璃边缘的高光随基底移动而变化，静态截图看不出差别，
+   实际使用时材质会「活」起来。位移幅度刻意压得很小，避免分散注意力。 */
+@keyframes ambient-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2.5%, -2%, 0) scale(1.06);
+  }
+}
+
+/* 动效敏感用户：保留光场，去掉漂移。 */
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
+}

@@ -5,6 +5,12 @@
 *.test
 *.out
 
+# Admin panel (Vue 3 + Vite). The bundle is a build artifact: produced by
+# `cd web && npm ci && npm run build`, and by the Node stage in the Dockerfile.
+# Committing it would put minified, content-hashed files into every diff.
+/web/node_modules/
+/web/dist/
+
 # Runtime data
 /data/
 *.log

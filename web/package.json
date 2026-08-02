@@ -1,0 +1,31 @@
+{
+  "name": "kiro-go-admin",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Kiro-Go admin panel — Vue 3 + Vite + Tailwind CSS, ClauseOS design system",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run verify && vite build && node scripts/check-glass.mjs && node scripts/check-breakpoints.mjs",
+    "build:only": "vite build",
+    "preview": "vite preview",
+    "verify": "node scripts/verify.mjs && npm run test --silent",
+    "check:glass": "node scripts/check-glass.mjs",
+    "test": "node --test scripts/stats.test.mjs",
+    "check:breakpoints": "node scripts/check-breakpoints.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/urbanist": "5.3.0",
+    "@phosphor-icons/vue": "2.2.1",
+    "pinia": "4.0.2",
+    "vue": "3.5.40",
+    "vue-router": "5.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-vue": "6.0.8",
+    "tailwindcss": "4.3.3",
+    "vite": "8.2.0"
+  }
+}

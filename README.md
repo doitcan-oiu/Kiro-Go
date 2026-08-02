@@ -44,12 +44,32 @@ docker run -d \
 
 ### Build from Source
 
+The admin panel is a Vue 3 + Vite single-page app under `web/`. Its build output
+(`web/dist`) is not committed, so build it before starting the server —
+otherwise `/admin` returns a "assets not found" notice.
+
 ```bash
 git clone https://github.com/Quorinex/Kiro-Go.git
 cd Kiro-Go
+
+# 1. admin panel (requires Node.js >= 20.19)
+cd web && npm ci && npm run build && cd ..
+
+# 2. server
 go build -o kiro-go .
 ./kiro-go
 ```
+
+To work on the panel with hot reload, run the Go server and Vite side by side:
+
+```bash
+./kiro-go                    # terminal 1 — API on :8080
+cd web && npm run dev        # terminal 2 — panel on :5173, proxies /admin/api
+```
+
+`npm run build` first runs `scripts/verify.mjs`, which checks that every `@/`
+import resolves, every icon exists, and every i18n key is present in both
+dictionaries. Set `KIRO_WEB_ROOT` to serve the bundle from a different directory.
 
 ### Deploy on Zeabur
 

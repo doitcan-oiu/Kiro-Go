@@ -66,6 +66,15 @@ func maskKey(key string) string {
 // info (email/subscription/credit) via RefreshAccountInfo. Returns a per-key
 // result summary; never aborts the whole batch on a single key's failure.
 func (h *Handler) ImportApiKeys(rawText, region, authRegion, apiRegion string) ApiKeyImportSummary {
+	return h.ImportApiKeysWithCost(rawText, region, authRegion, apiRegion, 0)
+}
+
+// ImportApiKeysWithCost 与 ImportApiKeys 相同，但为本批每个 Key 记录采购成本
+// （美元 / 个）。补号流程用它把供应商单价绑定到 Key 上，成为利润核算的成本项。
+//
+// cost <= 0 表示未知成本（人工导入的 Key 没有采购价），此时不写该字段，面板据此
+// 显示「—」而不是把利润当成「等于收入」——后者会把自有 Key 的收益虚报为纯利润。
+func (h *Handler) ImportApiKeysWithCost(rawText, region, authRegion, apiRegion string, cost float64) ApiKeyImportSummary {
 	summary := ApiKeyImportSummary{Results: []ApiKeyImportResult{}}
 
 	// Snapshot existing keys to dedup against.
@@ -122,6 +131,7 @@ func (h *Handler) ImportApiKeys(rawText, region, authRegion, apiRegion string) A
 			ExpiresAt:   0, // api_key: never refresh
 			Enabled:     true,
 			MachineId:   config.GenerateMachineId(),
+			Cost:        cost,
 		}
 		if err := config.AddAccount(account); err != nil {
 			summary.Results = append(summary.Results, ApiKeyImportResult{MaskedKey: masked, Error: err.Error()})

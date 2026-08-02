@@ -201,7 +201,8 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, model, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog(apiKeyID, "responses", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds())
+		// 非流式：整个响应体组装完才回给客户端，不存在「首字」时刻，故 ttft 传 0（未采集）。
+		h.recordSuccessLog(apiKeyID, "responses", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds(), 0)
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -329,6 +330,10 @@ func (h *Handler) handleResponsesStream(
 	var lastErr error
 	responseStarted := false
 	reqStart := time.Now()
+	// 首字延迟计时器：起算点与总耗时一致，两者才可比。
+	// 注意 response.created 事件在 reqStart 之前就已发出——那是协议头，
+	// 上游此时还没吐任何 token，不能算首字。
+	ttft := newFirstTokenTimer(reqStart)
 
 	retryBudget := resolveAccountRetryBudget(h.pool.Count())
 	for attempt := 0; attempt < retryBudget; attempt++ {
@@ -405,6 +410,9 @@ func (h *Handler) handleResponsesStream(
 				}
 				fullText.WriteString(text)
 				ensureMessageStarted()
+				// 首字：本路径的 thinking 文本只做缓冲不外发（见上方 isThinking 分支），
+				// 因此客户端看到的第一个字符就是这里的 output_text.delta。
+				ttft.mark()
 				send("response.output_text.delta", map[string]interface{}{
 					"type":          "response.output_text.delta",
 					"item_id":       messageItemID,
@@ -415,6 +423,10 @@ func (h *Handler) handleResponsesStream(
 				responseStarted = true
 			},
 			OnToolUse: func(tu KiroToolUse) {
+				// 仅含工具调用、没有任何正文的响应也要算首字，否则这类请求
+				// 会以「无首字数据」落库，把纯工具调用场景从分布图里整体抹掉。
+				// mark 幂等，前面已有正文时这里是空操作。
+				ttft.mark()
 				if messageStarted {
 					send("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
@@ -556,7 +568,7 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, model, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog(apiKeyID, "responses", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(apiKeyID, "responses", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds(), ttft.ms())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt

@@ -44,12 +44,31 @@ docker run -d \
 
 ### 源码编译
 
+管理面板是位于 `web/` 的 Vue 3 + Vite 单页应用，构建产物（`web/dist`）不入库，
+因此启动前必须先构建面板，否则访问 `/admin` 只会看到「产物缺失」提示。
+
 ```bash
 git clone https://github.com/Quorinex/Kiro-Go.git
 cd Kiro-Go
+
+# 1. 构建管理面板（需 Node.js >= 20.19）
+cd web && npm ci && npm run build && cd ..
+
+# 2. 编译服务端
 go build -o kiro-go .
 ./kiro-go
 ```
+
+开发面板时可让 Go 服务与 Vite 同时运行，享受热更新：
+
+```bash
+./kiro-go                    # 终端 1 —— API 监听 :8080
+cd web && npm run dev        # 终端 2 —— 面板 :5173，自动代理 /admin/api
+```
+
+`npm run build` 会先执行 `scripts/verify.mjs`，校验所有 `@/` 导入可解析、
+图标存在、以及 i18n 键在中英词典中均已定义。如需从其他目录加载产物，
+可通过 `KIRO_WEB_ROOT` 指定。
 
 ### 部署到 Zeabur
 

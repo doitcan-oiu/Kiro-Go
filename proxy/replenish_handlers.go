@@ -42,6 +42,8 @@ func replenishSupplierView(rc config.ReplenishConfig, provider string) map[strin
 		"apiKeyMasked": config.MaskApiKey(sc.ApiKey),
 		"hasApiKey":    sc.ApiKey != "",
 		"webhookCount": sc.WebhookCount,
+		// 单 Key 采购成本：面板可编辑，导入时绑定到每个账号。
+		"keyPrice": sc.KeyPrice,
 		// 能力位：前端据此决定是否显示「注册回调」按钮。
 		"supportsWebhookAutoRegister": config.SupportsWebhookAutoRegister(provider),
 		"hasSecret":                   sc.WebhookSecret != "",
@@ -115,11 +117,12 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		// 每家一份，键为供应商标识。
 		Suppliers map[string]struct {
-			Enabled      *bool   `json:"enabled,omitempty"`
-			BaseURL      *string `json:"baseUrl,omitempty"`
-			ApiKey       *string `json:"apiKey,omitempty"`
-			WebhookCount *int    `json:"webhookCount,omitempty"`
-			Zone         *string `json:"zone,omitempty"`
+			Enabled      *bool    `json:"enabled,omitempty"`
+			BaseURL      *string  `json:"baseUrl,omitempty"`
+			ApiKey       *string  `json:"apiKey,omitempty"`
+			WebhookCount *int     `json:"webhookCount,omitempty"`
+			KeyPrice     *float64 `json:"keyPrice,omitempty"`
+			Zone         *string  `json:"zone,omitempty"`
 		} `json:"suppliers,omitempty"`
 
 		Region           *string `json:"region,omitempty"`
@@ -174,6 +177,7 @@ func (h *Handler) apiUpdateReplenish(w http.ResponseWriter, r *http.Request) {
 			ApiKey:       in.ApiKey,
 			WebhookCount: in.WebhookCount,
 			Zone:         in.Zone,
+			KeyPrice:     in.KeyPrice,
 		}
 	}
 
@@ -292,26 +296,57 @@ func (h *Handler) apiTestReplenish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiRunReplenish 立即手动补号一次（所有启用的供应商各买一批）。
-// 可选 body {"count":N} 覆盖每家的购买数量。
+// apiRunReplenish 立即手动补号一次。
+//
+// 可选 body：
+//
+//	{"count":N}                每家（或指定那家）的购买数量，省略时用配置的 BatchCount
+//	{"provider":"kiroceo"}     只补这一家；省略则所有启用的供应商各买一批
+//
+// provider 存在的意义：面板把手动补号按钮放进了每家供应商的卡片里，用户点某一家
+// 时只应该动那一家的余额。此前只有「全部一起补」一个入口，想单独补某家必须先把
+// 其余几家的开关关掉、补完再打开——既繁琐，也会在这中间让后台轮询漏掉那几家。
 func (h *Handler) apiRunReplenish(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Count int `json:"count,omitempty"`
+		Count    int    `json:"count,omitempty"`
+		Provider string `json:"provider,omitempty"`
 	}
 	// body 可选：解析失败按默认批量处理。
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	res, err := h.runReplenishOnce(req.Count)
+	// 未知 provider 必须直接拒绝，不能静默退化成「补所有家」：那会让用户以为
+	// 只补了一家，实际动了每一家的余额——花钱的操作不允许有这种歧义。
+	provider := ""
+	if strings.TrimSpace(req.Provider) != "" {
+		provider = config.NormalizeReplenishProvider(req.Provider)
+		if provider == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "unknown supplier: " + req.Provider,
+			})
+			return
+		}
+	}
+
+	res, err := h.runReplenishOnce(provider, req.Count)
 	now := time.Now().Unix()
 	if err != nil {
-		_ = config.RecordReplenishRun(now, "", err.Error())
+		// 单家手动补号的失败只记该家，不覆盖全局运行态里另外几家的成功摘要——
+		// 否则在一家没库存时点一下，面板上会显示成整体补号失败。
+		if provider == "" {
+			_ = config.RecordReplenishRun(now, "", err.Error())
+		}
 		w.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	_ = config.RecordReplenishRun(now, res.Summary, res.ErrorText())
-	logger.Infof("[Replenish] manual run: %s", res.Summary)
+	if provider != "" {
+		logger.Infof("[Replenish] manual run (provider=%s): %s", provider, res.Summary)
+	} else {
+		logger.Infof("[Replenish] manual run: %s", res.Summary)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":   true,
 		"purchased": res.Purchased,

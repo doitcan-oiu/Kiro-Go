@@ -53,10 +53,14 @@ type AccountPool struct {
 	accounts      []config.Account
 	totalAccounts int
 	currentIndex  uint64
-	cooldowns     map[string]time.Time       // 账号冷却时间
-	errorCounts   map[string]int             // 连续错误计数
-	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
+	cooldowns     map[string]time.Time            // 账号冷却时间
+	errorCounts   map[string]int                  // 连续错误计数
+	modelLists    map[string]map[string]bool      // accountID → set of modelIDs (from ListAvailableModels)
 	runtimeStats  map[string]*accountRuntimeStats // accountID → dispatch health/load signals (health-scoring)
+	// revenueDirty 暂存「内存已加、磁盘未落」的收入累计值（accountID → 最新总额）。
+	// 存在的原因见 AddRevenue：收入每次成功请求都会变，逐次落盘等于每请求重写一遍
+	// 整个 config.json。
+	revenueDirty map[string]float64
 }
 
 var (
@@ -72,6 +76,7 @@ func GetPool() *AccountPool {
 			errorCounts:  make(map[string]int),
 			modelLists:   make(map[string]map[string]bool),
 			runtimeStats: make(map[string]*accountRuntimeStats),
+			revenueDirty: make(map[string]float64),
 		}
 		pool.Reload()
 	})
@@ -434,4 +439,82 @@ func effectiveWeight(weight int) int {
 func copyAccount(acc *config.Account) *config.Account {
 	c := *acc
 	return &c
+}
+
+// AddRevenue 累加某账号的收入（美元），并异步落盘。
+//
+// 与 UpdateStats 分开而不是合并进去：UpdateStats 在失败路径上也会被调用，而收入
+// 只在请求成功且模型可计价时产生。合并会让「失败请求」也走一遍收入写入逻辑，
+// 多一次无谓的持久化。
+//
+// 与 UpdateStats 一样必须遍历完整个切片而不是命中即返回：weight >= 2 的账号在
+// p.accounts 里有多份副本（见 Reload），只更新第一份会让后续轮询取到的副本
+// 带着旧的累计值，面板上的收入随轮询位置来回跳动。
+func (p *AccountPool) AddRevenue(id string, revenue float64) {
+	if revenue <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var updated bool
+	var total float64
+	for i := range p.accounts {
+		if p.accounts[i].ID != id {
+			continue
+		}
+		if !updated {
+			p.accounts[i].Revenue += revenue
+			total = p.accounts[i].Revenue
+			updated = true
+			continue
+		}
+		// 其余副本同步为同一个累计值，而不是各自再累加一次。
+		p.accounts[i].Revenue = total
+	}
+
+	if updated {
+		// 只标记待落盘，不在此处写磁盘。
+		//
+		// 收入在每次成功请求后都会变化，而 config.UpdateAccountRevenue 会重写整个
+		// config.json。逐次落盘意味着「每个请求一次全量文件重写」——账号多、并发高
+		// 时这是实打实的 I/O 放大；而用 `go` 把它丢到后台只是把开销藏起来，还额外
+		// 引入了「进程/测试结束后仍在写盘」的竞争。
+		//
+		// 因此改为脏值暂存 + 定期批量落盘（见 FlushRevenue，由 backgroundStatsSaver
+		// 每 30s 调用一次，并在退出前再刷一次）。崩溃最多丢一个刷新周期内的收入，
+		// 而收入是可以从 jsonl 日志重算的，这个取舍是安全的。
+		if p.revenueDirty == nil {
+			p.revenueDirty = make(map[string]float64)
+		}
+		p.revenueDirty[id] = total
+	}
+}
+
+// FlushRevenue 把暂存的收入累计值批量落盘，返回实际写出的账号数。
+//
+// 由后台定时器与进程退出前各调用一次。单独暴露而不是藏在定时器里，是为了让测试
+// 能显式触发落盘，从而不必依赖 sleep 去等一个后台 goroutine。
+func (p *AccountPool) FlushRevenue() int {
+	p.mu.Lock()
+	if len(p.revenueDirty) == 0 {
+		p.mu.Unlock()
+		return 0
+	}
+	pending := p.revenueDirty
+	p.revenueDirty = make(map[string]float64)
+	p.mu.Unlock()
+
+	// 在锁外写盘：config.Save 会做文件 I/O，持有池锁会挡住所有请求的账号选取。
+	for id, total := range pending {
+		if err := config.UpdateAccountRevenue(id, total); err != nil {
+			// 落盘失败则把该条放回脏集合，下个周期重试；直接丢弃会让收入静默倒退。
+			p.mu.Lock()
+			if _, superseded := p.revenueDirty[id]; !superseded {
+				p.revenueDirty[id] = total
+			}
+			p.mu.Unlock()
+		}
+	}
+	return len(pending)
 }

@@ -9,8 +9,10 @@ import (
 	"kiro-go/config"
 	"kiro-go/logger"
 	"kiro-go/pool"
+	"kiro-go/price"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,13 +37,56 @@ type RequestLog struct {
 	OutputTokens  int     `json:"outputTokens"`  // Completion tokens out (0 on failure)
 	CacheRead     int     `json:"cacheRead"`     // Prompt-cache read tokens (Claude paths only)
 	CacheCreation int     `json:"cacheCreation"` // Prompt-cache write tokens (Claude paths only)
-	Credits       float64 `json:"credits"`        // Credits consumed (0 on failure)
-	Duration      int64   `json:"duration"`       // Request duration in ms
-	ApiKeyID      string  `json:"apiKeyId,omitempty"`  // per-entry key id (the API key that routed the request)
-	ApiKeyName    string  `json:"apiKeyName,omitempty"` // resolved key name; populated at serialize time so renames stay current
+	Credits       float64 `json:"credits"`       // Credits consumed (0 on failure)
+	Duration      int64   `json:"duration"`      // Request duration in ms
+	// TTFT 是「首字延迟」：从收到客户端请求到第一个内容 token 写给客户端的毫秒数。
+	//
+	// 与 Duration（请求总耗时）是两个不同的指标：Duration 受输出长度支配，输出越长
+	// 越大；TTFT 只反映「用户等了多久才看到第一个字」，是交互体感的直接度量，也是
+	// 排查上游排队/冷启动的主要信号。
+	//
+	// 流式路径记录真实的首个内容分片时刻；非流式路径整个响应一次性返回，首字与末字
+	// 同时到达，因此 TTFT == Duration。
+	//
+	// omitempty：重写前的历史日志没有这个字段，反序列化后为 0。前端据此区分
+	// 「未采集」（0，跳过统计）与真实测量值，避免把旧数据当成 0ms 的完美延迟。
+	TTFT int64 `json:"ttft,omitempty"` // Time to first content token, ms (0 = not measured)
+
+	// Revenue 是本次请求按模型单价折算并乘以全局倍率后的收入（美元）。
+	//
+	// 在写日志时一次算定并持久化，而不是在前端按需重算。两个原因：
+	//  1. 单价表与倍率都会变。事后重算会让历史收入随之漂移，对账时无从解释
+	//     「上个月的收入为什么变了」。
+	//  2. 前端只有 500 条日志，无法据此得出全量收入；服务端算好后可以同时
+	//     累加进账号维度（Account.Revenue），两者口径天然一致。
+	//
+	// 模型不在价格表里时为 0，并置 RevenueUnpriced=true 以区分「免费」与「未知」。
+	Revenue float64 `json:"revenue,omitempty"`
+
+	// RevenueUnpriced 表示该模型查不到单价，Revenue 因此不可信。
+	// 面板据此显示「—」而不是 $0.00，避免把缺价静默呈现为零收入。
+	RevenueUnpriced bool   `json:"revenueUnpriced,omitempty"`
+	ApiKeyID        string `json:"apiKeyId,omitempty"`   // per-entry key id (the API key that routed the request)
+	ApiKeyName      string `json:"apiKeyName,omitempty"` // resolved key name; populated at serialize time so renames stay current
 }
 
 const requestLogsMaxSize = 500
+
+// maxLogQueryLimit 限制单次日志查询的返回条数。
+// 20000 条约 4 MB JSON，是「够算一天的利润」与「不把内存和带宽打满」之间的折中。
+const maxLogQueryLimit = 20000
+
+// parseLogLimit 解析 ?limit=N，非法或缺省返回 0（表示按内存环返回）。
+func parseLogLimit(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > maxLogQueryLimit {
+		return maxLogQueryLimit
+	}
+	return n
+}
 
 // Handler HTTP 处理器
 type Handler struct {
@@ -953,6 +998,9 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 	thinkingFormat := thinkingOpts.Format
 
 	reqStart := time.Now()
+	// 首字延迟以 reqStart 为起点，与总耗时同一起算点，两者才可比。
+	// 只在 sendText 里打点（真实内容 delta），message_start 这类协议头不算。
+	ttft := newFirstTokenTimer(reqStart)
 	msgID := "msg_" + uuid.New().String()
 	startInputTokens := estimatedInputTokens
 	excluded := make(map[string]bool)
@@ -1062,6 +1110,12 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		var eventThinkingOpen bool
 
 		sendText := func(text string, thinkingState int) {
+			// TTFT：sendText 是正文与 thinking 两类内容的唯一出口，故在此打点。
+			// 只在 text 非空时记录 —— thinkingState 1/3 会以空 text 触发
+			// <think>/</think> 这类纯标签事件，它们不是模型吐出的字符。
+			if text != "" {
+				ttft.mark()
+			}
 			if thinkingState == 0 {
 				if text == "" {
 					return
@@ -1373,7 +1427,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, payload *KiroPayload
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog(apiKeyID, "claude", model, account.ID, inputTokens, outputTokens, cacheUsage.CacheReadInputTokens, cacheUsage.CacheCreationInputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(apiKeyID, "claude", model, account.ID, inputTokens, outputTokens, cacheUsage.CacheReadInputTokens, cacheUsage.CacheCreationInputTokens, credits, time.Since(reqStart).Milliseconds(), ttft.ms())
 		recordClaudeCacheDispatch("success", model, "stream", account, cacheUsage, inputTokens, outputTokens)
 
 		stopReason := "end_turn"
@@ -1462,6 +1516,10 @@ func (h *Handler) backgroundStatsSaver() {
 
 // saveStats 保存统计到配置文件
 func (h *Handler) saveStats() {
+	// 收入的批量落盘挂在这里，而不是自己再起一个定时器：两者的持久化目标都是
+	// config.json，共用一个周期可以避免两个 goroutine 交替重写同一个文件。
+	h.pool.FlushRevenue()
+
 	config.UpdateStats(
 		int(atomic.LoadInt64(&h.totalRequests)),
 		int(atomic.LoadInt64(&h.successRequests)),
@@ -1543,7 +1601,37 @@ func (h *Handler) recordFailureWithDetails(apiKeyID, endpoint, model, accountID 
 // and outputTokens are split (vs. the legacy Tokens total) so the Logs tab can
 // show in/out/cache per request. cacheRead/cacheCreation come from the prompt-
 // cache tracker (Claude paths only; OpenAI/Responses pass 0 — no cache there).
-func (h *Handler) recordSuccessLog(apiKeyID, endpoint, model, accountID string, inputTokens, outputTokens, cacheRead, cacheCreation int, credits float64, durationMs int64) {
+// ttftMs 为首字延迟（毫秒）：流式路径传入首个内容分片的实测时刻，非流式路径传 0
+// 表示「无此指标」。
+//
+// 这里刻意不把 0 回填成 durationMs。非流式响应一次性返回，首字与末字同时到达，
+// 若回填就等于向分布图注入一批「首字延迟 == 总耗时」的伪样本；这些值通常比真实
+// 首字延迟高一到两个数量级，会把 P95 整体拉高，让图表看起来像首字延迟在恶化，
+// 而实际只是非流式请求变多了。宁可少一批样本，也不要一批错样本。
+func (h *Handler) recordSuccessLog(apiKeyID, endpoint, model, accountID string, inputTokens, outputTokens, cacheRead, cacheCreation int, credits float64, durationMs, ttftMs int64) {
+	// 上界夹取：首字不可能晚于整个请求结束。越界只能来自计时错误（如时钟回拨），
+	// 夹到 durationMs 而不是丢弃，保留「确实测到了首字」这一事实。
+	// 负值同样只可能来自计时错误，归零表示无数据。
+	if ttftMs < 0 {
+		ttftMs = 0
+	} else if ttftMs > durationMs {
+		ttftMs = durationMs
+	}
+
+	// 收入换算集中在这一处：四类 token 数、模型名、账号 id 都在这里齐备，
+	// 放到别处都要重新把这些参数传一遍。倍率在此处一并乘上，因此日志里的
+	// Revenue 与账号维度累计的 Revenue 口径天然一致，不会出现「日志加总 ≠
+	// 卡片显示」这种事后极难排查的偏差。
+	revenue, priced := price.Revenue(model, price.Usage{
+		Input:         inputTokens,
+		Output:        outputTokens,
+		CacheRead:     cacheRead,
+		CacheCreation: cacheCreation,
+	})
+	if priced {
+		revenue *= config.GetProfitMultiplier()
+	}
+
 	entry := RequestLog{
 		Time:          time.Now().Unix(),
 		Endpoint:      endpoint,
@@ -1557,10 +1645,21 @@ func (h *Handler) recordSuccessLog(apiKeyID, endpoint, model, accountID string, 
 		CacheCreation: cacheCreation,
 		Credits:       credits,
 		Duration:      durationMs,
+		TTFT:          ttftMs,
 		ApiKeyID:      apiKeyID,
+		Revenue:       revenue,
+		// 查不到单价时显式标记，而不是让 Revenue=0 冒充「这次没赚钱」。
+		// 前端据此显示「—」，运维才有机会发现价格表需要更新。
+		RevenueUnpriced: !priced,
 	}
 
 	h.appendRequestLog(entry)
+
+	// 账号维度累计。与 pool.UpdateStats 分开调用而不是塞进它：UpdateStats 被
+	// 失败路径也会用到，而收入只在成功时产生。
+	if accountID != "" && revenue > 0 {
+		h.pool.AddRevenue(accountID, revenue)
+	}
 }
 
 func (h *Handler) appendRequestLog(entry RequestLog) {
@@ -1708,7 +1807,10 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, payload *KiroPayl
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog(apiKeyID, "claude", model, account.ID, inputTokens, outputTokens, cacheUsage.CacheReadInputTokens, cacheUsage.CacheCreationInputTokens, credits, time.Since(reqStart).Milliseconds())
+		// TTFT=0：非流式响应整体一次性返回，不存在「首字」这一时刻，
+		// 记 0 表示「不适用」，前端在统计首字延迟分布时会跳过这些条目。
+		// 若在此填入 duration，分布图会被非流式的总耗时污染。
+		h.recordSuccessLog(apiKeyID, "claude", model, account.ID, inputTokens, outputTokens, cacheUsage.CacheReadInputTokens, cacheUsage.CacheCreationInputTokens, credits, time.Since(reqStart).Milliseconds(), 0)
 		recordClaudeCacheDispatch("success", model, "nonstream", account, cacheUsage, inputTokens, outputTokens)
 
 		responseThinkingContent := rawThinkingContent
@@ -1876,6 +1978,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
+	// 首字延迟与总耗时共用起算点，两者才可比。见 first_token.go。
+	ttft := newFirstTokenTimer(reqStart)
 
 	retryBudget := resolveAccountRetryBudget(h.pool.Count())
 	for attempt := 0; attempt < retryBudget; attempt++ {
@@ -2002,6 +2106,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 			}
 			data, _ := json.Marshal(chunk)
 			emitRaw(fmt.Sprintf("data: %s\n\n", string(data)))
+			// 首字延迟：这里是 sendChunk 唯一的实际写出点，且此处的 chunk 必定
+			// 携带内容（上面各分支已把空文本提前 return），因此是准确的打点位置。
+			ttft.mark()
 			responseStarted = true
 		}
 
@@ -2218,7 +2325,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, payload *KiroPayload
 		//   branch off main. No-op here; stripped so handler compiles against main's
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog(apiKeyID, "openai", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(apiKeyID, "openai", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds(), ttft.ms())
 
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
@@ -2368,7 +2475,8 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, payload *KiroPayl
 		//   branch off main. No-op here; stripped so handler compiles against main's
 		//   pool. Re-added verbatim when dispatch lands.
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog(apiKeyID, "openai", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds())
+		// 非流式：整个响应体组装完才回给客户端，不存在「首字」时刻，故 ttft 传 0（未采集）。
+		h.recordSuccessLog(apiKeyID, "openai", model, account.ID, inputTokens, outputTokens, 0, 0, credits, time.Since(reqStart).Milliseconds(), 0)
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
@@ -2620,6 +2728,9 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 		// 获取运行时统计
 		stats := statsMap[a.ID]
 
+		// cost/revenue 是利润核算的两个输入：成本来自持久化配置（导入时绑定到
+		// Key），收入来自运行态累计。利润本身不在后端算 —— 前端要在倍率变化时
+		// 即时重算，后端再存一个派生值只会引入两处不一致的风险。
 		result[i] = map[string]interface{}{
 			"id":                a.ID,
 			"email":             a.Email,
@@ -2632,6 +2743,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"banStatus":         a.BanStatus,
 			"banReason":         a.BanReason,
 			"banTime":           a.BanTime,
+			"createdAt":         a.CreatedAt,
+			"disabledAt":        a.DisabledAt,
 			"expiresAt":         a.ExpiresAt,
 			"hasToken":          a.AccessToken != "",
 			"machineId":         a.MachineId,
@@ -2662,6 +2775,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"totalTokens":       stats.TotalTokens,
 			"totalCredits":      stats.TotalCredits,
 			"lastUsed":          stats.LastUsed,
+			"cost":              a.Cost,
+			"revenue":           stats.Revenue,
 		}
 	}
 	json.NewEncoder(w).Encode(result)
@@ -2787,6 +2902,11 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["tags"]; ok {
 		existing.Tags = toStringSlice(v)
+	}
+	// 采购成本可后期修正：供应商调价、或为历史账号补录成本。JSON 数字统一解码为
+	// float64，负值忽略而不是夹到 0——负成本只能来自输入错误，静默改写会掩盖它。
+	if v, ok := updates["cost"].(float64); ok && v >= 0 {
+		existing.Cost = v
 	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
@@ -3897,6 +4017,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"rateLimitBurstSeconds": config.GetRateLimitBurst(),
 		"webhookUrl":            config.GetWebhookURL(),
 		"promptCacheEnabled":    config.GetPromptCacheEnabled(),
+		"profitMultiplier":      config.GetProfitMultiplier(),
 	})
 }
 
@@ -3955,6 +4076,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		RateLimitBurstSeconds *float64 `json:"rateLimitBurstSeconds,omitempty"`
 		WebhookURL            *string  `json:"webhookUrl,omitempty"`
 		PromptCacheEnabled    *bool    `json:"promptCacheEnabled,omitempty"`
+		ProfitMultiplier      *float64 `json:"profitMultiplier,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -4034,6 +4156,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 收入倍率。非正数由 config 层拒绝并回 400 而不是静默夹取：这个值直接乘进
+	// 每一笔收入，静默改写会让面板上的利润与用户以为设置的口径不一致。
+	//
+	// 只影响此后新产生的日志与累计值，不回算历史：历史收入是当时倍率下的既成
+	// 事实，回算会让昨天的利润随今天改一次设置而变动，账目不可复核。
+	if req.ProfitMultiplier != nil {
+		if err := config.UpdateProfitMultiplier(*req.ProfitMultiplier); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		logger.Infof("[Profit] revenue multiplier set to %g", *req.ProfitMultiplier)
+	}
+
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
@@ -4061,10 +4197,32 @@ func (h *Handler) apiResetStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
+// apiGetLogs 返回请求日志（最新在前）。
+//
+// ?limit=N 覆盖返回条数：
+//   - 省略：返回内存环形缓冲里的全部条目（上限 requestLogsMaxSize=500）
+//   - N > 内存上限：从持久化的 jsonl 直接读取尾部 N 条
+//
+// 为什么需要这个参数：日志在磁盘上是全量追加、永不轮转的，但内存环只保留最近
+// 500 条。利润统计要按时间窗口聚合（今日/本周收入），500 条在高流量下可能只覆盖
+// 几分钟，据此算出的「今日利润」会严重偏低。所以读取路径必须能越过内存环。
+//
+// 上限 maxLogQueryLimit 存在的意义：limit 直接决定一次响应的体积与 jsonl 的扫描
+// 量，不设上限时一个 ?limit=99999999 就能让服务读满整个文件并把结果全部序列化。
 func (h *Handler) apiGetLogs(w http.ResponseWriter, r *http.Request) {
-	// Resolve apiKeyID → name at serialize time so renames stay current and the
-	// hot record path stays free of name lookups.
 	rawLogs := h.getRequestLogs()
+
+	// limit 超过内存环容量时改从磁盘取：jsonl 是权威的全量记录。
+	if n := parseLogLimit(r.URL.Query().Get("limit")); n > len(rawLogs) {
+		if persisted := LoadRecentLogs(n); len(persisted) > 0 {
+			// LoadRecentLogs 返回「最旧在前」（文件顺序），此处统一成「最新在前」。
+			rawLogs = make([]RequestLog, len(persisted))
+			for i, e := range persisted {
+				rawLogs[len(persisted)-1-i] = e
+			}
+		}
+	}
+
 	id2name := make(map[string]string)
 	for _, e := range config.ListApiKeys() {
 		id2name[e.ID] = e.Name
@@ -4380,16 +4538,7 @@ func (h *Handler) apiGetAccountModelsCached(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// ==================== 静态文件服务 ====================
-
-func (h *Handler) serveAdminPage(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "web/index.html")
-}
-
-func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/admin/")
-	http.ServeFile(w, r, "web/"+path)
-}
+// 静态文件服务见 admin_static.go（serveAdminPage / serveStaticFile）。
 
 // apiGetThinkingConfig 获取 thinking 配置
 func (h *Handler) apiGetThinkingConfig(w http.ResponseWriter, r *http.Request) {

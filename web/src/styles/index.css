@@ -1,0 +1,905 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* Variable fonts (§4.1): Urbanist for brand/headings, Inter for UI/body. */
+@import '@fontsource-variable/urbanist/index.css';
+@import '@fontsource-variable/inter/index.css';
+
+/* ============================================================================
+   Tailwind v4 @theme bridge.
+   Every entry resolves to a token from tokens.css rather than a literal, so
+   `.light` on <html> reskins the whole app without any `dark:` variants. This is
+   why the codebase has no colour literals outside tokens.css.
+   ========================================================================= */
+@theme {
+  /* Disable Tailwind's default palette so a stray `bg-red-500` fails loudly
+     instead of silently escaping the design system. */
+  --color-*: initial;
+
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-white: #fff;
+  --color-black: #000;
+
+  --color-bg: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-surface: var(--surface-content);
+  --color-surface-input: var(--surface-input);
+  --color-surface-head: var(--surface-head);
+  --color-surface-hover: var(--surface-row-hover);
+
+  --color-accent: var(--accent-primary);
+  --color-accent-muted: var(--accent-primary-muted);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--semantic-success);
+  --color-warning: var(--semantic-warning);
+  --color-error: var(--semantic-error);
+  --color-info: var(--semantic-info);
+
+  --color-txt: var(--text-primary);
+  --color-txt-secondary: var(--text-secondary);
+  --color-txt-tertiary: var(--text-tertiary);
+  --color-txt-inverse: var(--text-inverse);
+
+  --color-line: var(--border-glass);
+  --color-line-strong: var(--border-strong);
+  --color-line-active: var(--border-active);
+  --color-divider: var(--surface-divider);
+
+  /* §4.2 字号层级 */
+  --text-display-xl: 36px;
+  --text-display-xl--line-height: 1.2;
+  --text-display-xl--font-weight: 700;
+  --text-display-lg: 28px;
+  --text-display-lg--line-height: 1.2;
+  --text-display-lg--font-weight: 700;
+  --text-title-lg: 24px;
+  --text-title-lg--line-height: 1.3;
+  --text-title-lg--font-weight: 600;
+  --text-title-md: 20px;
+  --text-title-md--line-height: 1.3;
+  --text-title-md--font-weight: 600;
+  --text-title-sm: 16px;
+  --text-title-sm--line-height: 1.4;
+  --text-title-sm--font-weight: 500;
+  --text-body: 14px;
+  --text-body--line-height: 1.5;
+  --text-body-sm: 13px;
+  --text-body-sm--line-height: 1.5;
+  --text-caption: 12px;
+  --text-caption--line-height: 1.4;
+  --text-caption--font-weight: 500;
+  --text-caption-sm: 11px;
+  --text-caption-sm--line-height: 1.4;
+
+  /* §5.1 间距 Token（8px 倍数体系） */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-2xl: 48px;
+  --spacing-3xl: 64px;
+
+  /* §6.1 圆角 Token */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* §6.2 阴影系统 */
+  --shadow-sm: var(--sh-sm);
+  --shadow-md: var(--sh-md);
+  --shadow-lg: var(--sh-lg);
+  --shadow-glow: var(--sh-glow);
+  --shadow-glow-strong: var(--sh-glow-strong);
+  --shadow-3d: var(--sh-3d);
+
+  --font-brand: var(--font-brand-stack);
+  --font-ui: var(--font-ui-stack);
+  --font-mono: var(--font-mono-stack);
+
+  /* §8.1 动画 Token */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+  /* ═══ 自定义断点 ═══
+     必须与 Tailwind 默认断点使用同一单位（rem）。这一点是硬性约束，不是风格问题。
+
+     Tailwind 会按断点数值排序 media query，以保证「大断点的规则排在后面、从而覆盖
+     小断点」。但它无法跨单位比较大小，px 与 rem 混用时会把所有 px 断点整体排在
+     rem 断点之前。此前 laptop/desktop 用 px 声明，产出的顺序是：
+
+       @media (width>=1024px) { .laptop\:grid-cols-3 }
+       @media (width>=1440px) { .desktop\:grid-cols-4 }
+       @media (width>=40rem)  { .sm\:grid-cols-2 }   ← 排在最后
+
+     宽屏上三条全部命中且优先级相同，后来者胜出 —— `sm:grid-cols-2` 把 4 列覆盖回
+     2 列。这就是「账号一行 4 个变成一行 2 个」的直接原因。统一为 rem 后顺序恢复
+     升序（40 → 64 → 80 → 96rem），覆盖关系正确。
+
+     取值刻意与 lg/xl 对齐（64rem=1024px、80rem=1280px），保留语义化名字但不再引入
+     新的断点数值——多一个中间断点就多一处需要跨单位排序的风险。
+
+     注：规范 §11.1 把桌面档定在 1440px，这里下调到 1280px。1280/1366 是最常见的
+     笔记本宽度，若按 1440px 起跳，它们只能显示 3 列；1280px 下四栏每张卡片仍有
+     ~274px，足够容纳卡片内的两列指标网格。 */
+  --breakpoint-laptop: 64rem;
+  --breakpoint-desktop: 80rem;
+}
+
+/* `light:` mirrors Tailwind's `dark:` for the rare case where a value genuinely
+   cannot be expressed as a token (e.g. inverting a decorative gradient). */
+@custom-variant light (&:where(.light, .light *));
+
+/* ============================================================================
+   Base layer
+   ========================================================================= */
+@layer base {
+  * {
+    border-color: var(--border-glass);
+  }
+
+  /* 基底色放在 html 而不是 body，这一点是刚性的。
+     body 上的 ::before/::after 用负 z-index 承载环境光场；按 CSS 绘制顺序，
+     负 z-index 后代先于「非定位后代的背景」绘制，因此若把背景色留在 body 上，
+     body 自身的背景会盖住光场——只有在 html 完全没有背景、body 背景被提升为
+     画布背景时才碰巧正常。那是隐式行为，一旦有人给 html 加背景就会破功。
+     显式放在 html 上，绘制顺序变得确定：html 背景 → 光场 → 内容。 */
+  html {
+    -webkit-text-size-adjust: 100%;
+    background-color: var(--bg-primary);
+  }
+
+  /* 外壳是「固定高度盒子 + 内部滚动」（见 AppShell.vue），页面本身不滚动。
+     因此这里不能留 `scrollbar-gutter: stable`：html 永远不会出现滚动条，
+     该声明只会在右侧恒定留出一条空白槽，把盒子挤得左右不对称。滚动条槽位
+     改由真正滚动的那个容器（main）自己声明。 */
+  body {
+    margin: 0;
+    /* 刻意不写 overflow: hidden。外壳自身是 h-dvh + border-box，正常情况下高度
+       恰好等于视口，页面本就不会滚动；而登录页与启动页在外壳之外，用的是
+       min-h-dvh——一旦视口过矮（横屏手机、小窗），它们需要能滚动，否则登录表单
+       会被裁掉且无法触及。
+       橡皮筋效果用 overscroll-behavior 抑制即可，不必牺牲这条逃生通道。 */
+    overscroll-behavior: none;
+    color: var(--text-primary);
+    font-family: var(--font-ui-stack);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* §4.3 英文/数字与中文之间自动留 1/4em */
+    text-spacing-trim: space-all;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-brand-stack);
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  /* Tabular figures everywhere numbers are compared vertically (§4.3). */
+  th,
+  td,
+  input[type='number'],
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    background: none;
+    border: none;
+  }
+
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* §12 无障碍：所有可聚焦元素有 2px 强调色外环 */
+  :focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--accent-soft-strong);
+    color: var(--text-primary);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+    background-clip: content-box;
+  }
+
+  /* §8.3 / §12 减弱动效 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ============================================================================
+   §3 Liquid Glass 材质工具类
+
+   读起来像玻璃的关键不是「半透明 + 模糊」，而是四层叠加：
+
+     1. 折射体 (backdrop-filter) ── 透过材质看到的背景被模糊、提亮、增饱和
+     2. 材质本体 (背景渐变)       ── 极淡的白色渐变，模拟玻璃上薄下厚
+     3. 镜面高光 (背景渐变)       ── 斜向掠射光在表面扫过的一道亮痕
+     4. 折射边缘 (inset 阴影)     ── 顶边亮线 + 内圈描边 + 底边回弹光
+
+   只做 1 + 2 在深色背景上必然失败：模糊近黑色仍是近黑色，材质会退化成一块
+   灰片。第 3、4 层才是玻璃感的实际来源。
+
+   实现上刻意不使用伪元素：高光与材质本体都放进 `background-image` 的多层
+   堆叠里。伪元素方案需要 `position: relative` + `overflow: hidden` +
+   `isolation: isolate` 三件套，而这三者都会产生副作用——position 会破坏
+   侧边栏/顶栏的 `sticky` 定位，overflow 会裁掉下拉列表自身的滚动区，且
+   最终表现依赖工具类的书写顺序。背景层方案没有这些问题，且自动跟随
+   `border-radius` 裁切。
+
+   玻璃仅用于导航层与控件层；内容层使用下方的 `.surface-*` 实体背景 (§3.3)。
+   ========================================================================= */
+
+@utility glass-thin {
+  /* 第 3 层高光在前（渐变堆叠中靠前者在上），第 2 层材质本体在后。 */
+  background-image: var(--glass-sheen-thin), var(--glass-thin-bg);
+  background-color: transparent;
+  backdrop-filter: var(--glass-thin-filter);
+  -webkit-backdrop-filter: var(--glass-thin-filter);
+  border: 1px solid var(--glass-thin-border);
+  /* 第 4 层：折射边缘 + 外投影。 */
+  box-shadow: var(--glass-edge-thin), var(--sh-sm);
+}
+
+@utility glass-regular {
+  background-image: var(--glass-sheen-regular), var(--glass-regular-bg);
+  background-color: transparent;
+  backdrop-filter: var(--glass-regular-filter);
+  -webkit-backdrop-filter: var(--glass-regular-filter);
+  border: 1px solid var(--glass-regular-border);
+  box-shadow: var(--glass-edge-regular), var(--sh-md);
+}
+
+@utility glass-clear {
+  background-image: var(--glass-sheen-clear), var(--glass-clear-bg);
+  background-color: transparent;
+  backdrop-filter: var(--glass-clear-filter);
+  -webkit-backdrop-filter: var(--glass-clear-filter);
+  border: 1px solid var(--glass-clear-border);
+  box-shadow: var(--glass-edge-clear);
+}
+
+@utility glass-thick {
+  background-image: var(--glass-sheen-thick), var(--glass-thick-bg);
+  background-color: transparent;
+  backdrop-filter: var(--glass-thick-filter);
+  -webkit-backdrop-filter: var(--glass-thick-filter);
+  border: 1px solid var(--glass-thick-border);
+  box-shadow: var(--glass-edge-thick), var(--sh-lg);
+}
+
+/* 危险态玻璃：用于「已禁用 / 已封禁」的凭证卡片。
+   与四级中性玻璃同构（折射 + 材质 + 掠光 + 折射边缘），只把材质本体与边缘
+   换成红色调，因此禁用卡片依然是玻璃，而不是一块贴上去的红色板子。
+
+   为什么不只改 border 颜色：禁用状态需要在一屏几十张卡片里被一眼扫到，
+   1px 描边的信息量太低——之前的实现只有一个灰色「已停用」徽章，扫视时几乎
+   看不出来。整片材质染色是唯一能在余光里成立的做法。 */
+@utility glass-danger {
+  background-image: var(--glass-sheen-danger), var(--glass-danger-bg);
+  background-color: transparent;
+  backdrop-filter: var(--glass-danger-filter);
+  -webkit-backdrop-filter: var(--glass-danger-filter);
+  border: 1px solid var(--glass-danger-border);
+  box-shadow: var(--glass-edge-danger), var(--sh-sm);
+}
+
+/* §8.2 玻璃卡片悬停：材质变厚、边框变亮、Y 上浮 -2px。
+   Liquid Glass 的悬停本质是「光源更近」，所以边缘高光同时增强。
+   只动 background-color / border-color / box-shadow / transform —— 这四者
+   都可补间；background-image 不可动画，故高光渐变保持不变。 */
+@utility glass-hover {
+  transition:
+    background-color var(--dur-fast) var(--ease-out-expo),
+    border-color var(--dur-fast) var(--ease-out-expo),
+    transform var(--dur-fast) var(--ease-out-expo),
+    box-shadow var(--dur-fast) var(--ease-out-expo);
+
+  &:hover {
+    background-color: var(--glass-hover-tint);
+    border-color: var(--glass-hover-border);
+    transform: translateY(-2px);
+  }
+}
+
+/* 大面积 backdrop-filter 开销高 (§8.3)。窄屏 / 用户明确要求降低透明度时，
+   去掉滤镜并换用不透明填充；高光渐变一并撤掉——没有折射的高光只会显脏。 */
+@media (max-width: 767px), (prefers-reduced-transparency: reduce) {
+  .glass-thin,
+  .glass-regular,
+  .glass-clear,
+  .glass-thick {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-image: none;
+    background-color: var(--glass-fallback-bg);
+  }
+  .glass-danger {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-image: none;
+    background-color: var(--glass-danger-fallback-bg);
+  }
+}
+
+/* 浏览器不支持 backdrop-filter 时同样降级，否则材质会变成一块半透明灰。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-thin,
+  .glass-regular,
+  .glass-clear,
+  .glass-thick {
+    background-image: none;
+    background-color: var(--glass-fallback-bg);
+  }
+
+  /* 危险态单独退化到红色实底：若与上面共用中性填充，禁用状态的红色提示会
+     在不支持 backdrop-filter 的浏览器上彻底消失。 */
+  .glass-danger {
+    background-image: none;
+    background-color: var(--glass-danger-fallback-bg);
+  }
+}
+
+@layer components {
+  /* ═══ 内容层实体背景 (§3.3) ═══ */
+  .surface-card {
+    background-color: var(--surface-content);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--sh-sm);
+  }
+
+  /* ═══ §9.3 主按钮 / CTA + §9.4 玻璃次按钮 ═══ */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 44px;
+    padding-inline: 20px;
+    border-radius: 9999px;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+    transition:
+      background-color var(--dur-fast) var(--ease-out-expo),
+      border-color var(--dur-fast) var(--ease-out-expo),
+      box-shadow var(--dur-fast) var(--ease-out-expo),
+      filter var(--dur-fast) var(--ease-out-expo),
+      transform var(--dur-fast) var(--ease-spring);
+  }
+
+  /* §8.2 按钮点击：缩放 0.97 → 回弹 1.0 */
+  .btn:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    background: rgb(255 255 255 / 0.1);
+    color: var(--text-tertiary);
+    border-color: transparent;
+    box-shadow: none;
+    filter: none;
+  }
+
+  .btn-primary {
+    background-color: var(--accent-primary);
+    color: var(--text-inverse);
+    box-shadow: var(--sh-glow);
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+    box-shadow: var(--sh-glow-strong);
+  }
+
+  /* 玻璃次按钮 (§9.4)。用 background-image 而非 background-color：`-bg` 现在是
+     渐变，纯色属性会直接丢弃它。顶边 inset 亮线让胶囊也有厚度。 */
+  .btn-glass {
+    background-image: var(--glass-clear-bg);
+    backdrop-filter: var(--glass-clear-filter);
+    -webkit-backdrop-filter: var(--glass-clear-filter);
+    border: 1px solid var(--glass-clear-border);
+    box-shadow: var(--glass-edge-clear);
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .btn-glass:hover:not(:disabled) {
+    background-image: var(--glass-regular-bg);
+    border-color: var(--glass-regular-border);
+    box-shadow: var(--glass-edge-regular);
+    color: var(--text-primary);
+  }
+
+  .btn-danger {
+    background-color: rgb(239 68 68 / 0.12);
+    border: 1px solid rgb(239 68 68 / 0.28);
+    color: var(--semantic-error);
+    font-weight: 500;
+  }
+  .btn-danger:hover:not(:disabled) {
+    background-color: rgb(239 68 68 / 0.2);
+    border-color: rgb(239 68 68 / 0.45);
+  }
+
+  .btn-ghost {
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: var(--surface-row-hover);
+    color: var(--text-primary);
+  }
+
+  /* Touch targets stay ≥44px (§11.2); `sm`/`xs` shrink the visual box only. */
+  .btn-sm {
+    height: 36px;
+    padding-inline: 14px;
+    font-size: 13px;
+  }
+  .btn-xs {
+    height: 30px;
+    padding-inline: 12px;
+    font-size: 12px;
+  }
+
+  .btn-icon {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: var(--radius-md);
+  }
+
+  /* ═══ §9.5 输入框 ═══ */
+  .field {
+    width: 100%;
+    height: 40px;
+    padding-inline: 12px;
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-input);
+    border: 1px solid var(--border-glass);
+    color: var(--text-primary);
+    font-size: 14px;
+    transition:
+      border-color var(--dur-fast) var(--ease-out-expo),
+      box-shadow var(--dur-fast) var(--ease-out-expo);
+  }
+
+  .field::placeholder {
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+
+  .field:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-soft-strong);
+  }
+
+  .field:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  textarea.field {
+    height: auto;
+    min-height: 92px;
+    padding-block: 10px;
+    line-height: 1.55;
+    resize: vertical;
+    font-family: var(--font-mono-stack);
+    font-size: 13px;
+  }
+
+  .field-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  .field-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+  }
+
+  .field-error {
+    border-color: var(--semantic-error) !important;
+  }
+
+  /* ═══ §9.8 状态标签 / 徽章 ═══ */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .badge-green {
+    background: rgb(0 255 157 / 0.1);
+    color: var(--accent-primary);
+  }
+  .badge-yellow {
+    background: rgb(245 158 11 / 0.1);
+    color: var(--semantic-warning);
+  }
+  .badge-red {
+    background: rgb(239 68 68 / 0.1);
+    color: var(--semantic-error);
+  }
+  .badge-blue {
+    background: rgb(59 130 246 / 0.1);
+    color: var(--accent-secondary);
+  }
+  .badge-gray {
+    background: rgb(255 255 255 / 0.06);
+    color: var(--text-secondary);
+  }
+  .light .badge-green {
+    background: rgb(5 150 105 / 0.1);
+  }
+  .light .badge-gray {
+    background: rgb(0 0 0 / 0.05);
+  }
+
+  /* §12 色彩不唯一：状态同时用颜色 + 形状 + 文字三层传达 */
+  .badge-dot::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: currentColor;
+    flex: none;
+  }
+
+  /* ═══ §7.3 状态指示器 ═══ */
+  .status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 9999px;
+    flex: none;
+  }
+  .status-dot-green {
+    background: var(--accent-primary);
+    /* 辉光走 token：原先写死 rgb(0 255 157)，亮色模式下强调色是深绿 #059669，
+       固定的亮绿辉光会在深绿点周围糊出一圈荧光边。 */
+    box-shadow: 0 0 8px var(--accent-glow);
+  }
+  .status-dot-yellow {
+    background: var(--semantic-warning);
+  }
+  .status-dot-red {
+    background: var(--semantic-error);
+  }
+  /* blue 必须存在：StatusBadge 的 tone 支持 blue（订阅等级、试用标记都在用），
+     缺这条规则时圆点只有尺寸没有颜色，渲染成一块空白占位。 */
+  .status-dot-blue {
+    background: var(--semantic-info);
+  }
+  .status-dot-idle {
+    background: transparent;
+    /* 描边同样不能写死白色：亮底上白描边等于不可见。 */
+    border: 1.5px solid var(--border-strong);
+  }
+
+  /* ═══ §9.6 表格 ═══ */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .data-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: 40px;
+    padding-inline: 16px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    background-color: var(--surface-head);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    white-space: nowrap;
+  }
+  .data-table tbody td {
+    height: 48px;
+    padding-inline: 16px;
+    border-top: 1px solid var(--surface-divider);
+    vertical-align: middle;
+  }
+  .data-table tbody tr {
+    transition: background-color var(--dur-fast) var(--ease-out-expo);
+  }
+  .data-table tbody tr:hover {
+    background-color: var(--surface-row-hover);
+  }
+  .data-table tbody tr[data-selected='true'] {
+    background-color: var(--accent-soft);
+  }
+
+  /* §11.1 <768px: collapse rows into stacked definition lists via data-label. */
+  @media (max-width: 767px) {
+    .data-table thead {
+      display: none;
+    }
+    .data-table tbody tr {
+      display: block;
+      padding: 12px 4px;
+      border-top: 1px solid var(--surface-divider);
+    }
+    .data-table tbody td {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      height: auto;
+      min-height: 32px;
+      padding: 5px 12px;
+      border: 0;
+    }
+    .data-table tbody td::before {
+      content: attr(data-label);
+      flex: none;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+    }
+  }
+
+  /* ═══ Usage bars ═══ */
+  .meter {
+    height: 6px;
+    border-radius: 9999px;
+    background: rgb(255 255 255 / 0.07);
+    overflow: hidden;
+  }
+  .light .meter {
+    background: rgb(0 0 0 / 0.07);
+  }
+  .meter-fill {
+    height: 100%;
+    border-radius: 9999px;
+    background: var(--accent-primary);
+    transition: width var(--dur-normal) var(--ease-out-expo);
+  }
+  .meter-fill[data-level='high'] {
+    background: var(--semantic-warning);
+  }
+  .meter-fill[data-level='critical'] {
+    background: var(--semantic-error);
+  }
+
+  /* ═══ Section heading ═══ */
+  .section-title {
+    font-family: var(--font-brand-stack);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .card-title {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+
+  /* §9.1 分组标题：11px Medium, 大写, 上下 16px */
+  .nav-group-label {
+    padding-inline: 12px;
+    margin-block: 16px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .code-inline {
+    font-family: var(--font-mono-stack);
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-row-hover);
+    border: 1px solid var(--border-glass);
+  }
+}
+
+/* ============================================================================
+   Motion keyframes (§8.2)
+   ========================================================================= */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 弹窗入场：scale(0.95) + opacity(0) → 250ms ease-out (§9.7) */
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+}
+
+/* 菜单弹出：从触发点 scale(0.9) + opacity(0) → 展开 (§8.2) */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.96);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px) scale(0.96);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Indeterminate shimmer for skeleton placeholders. */
+@keyframes shimmer {
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@layer components {
+  .anim-fade {
+    animation: fade-in var(--dur-normal) var(--ease-out-expo);
+  }
+  .anim-rise {
+    animation: rise-in var(--dur-normal) var(--ease-out-expo);
+  }
+  .anim-pop {
+    animation: pop-in 200ms var(--ease-out-expo);
+  }
+  .anim-modal {
+    animation: modal-in var(--dur-normal) var(--ease-out-expo);
+  }
+  .anim-spin {
+    animation: spin 900ms linear infinite;
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--surface-row-hover) 0%,
+      rgb(255 255 255 / 0.08) 50%,
+      var(--surface-row-hover) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Vue <Transition> pairs used across views. */
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: opacity var(--dur-fast) var(--ease-out-expo);
+  }
+  .fade-enter-from,
+  .fade-leave-to {
+    opacity: 0;
+  }
+
+  /* §8.2 页面切换：左右滑动 */
+  .page-enter-active {
+    transition:
+      opacity var(--dur-normal) var(--ease-out-expo),
+      transform var(--dur-normal) var(--ease-out-expo);
+  }
+  .page-enter-from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  /* §8.2 列表项删除：向右滑出 + opacity → 0，下方元素上滑补位 */
+  .list-move,
+  .list-enter-active,
+  .list-leave-active {
+    transition: all var(--dur-normal) var(--ease-out-expo);
+  }
+  .list-enter-from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  .list-leave-to {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+  .list-leave-active {
+    position: absolute;
+    width: 100%;
+  }
+}
+
+/* Screen-reader-only helper (§12 屏幕阅读器). */
+@utility sr-only-focusable {
+  &:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}

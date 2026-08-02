@@ -271,12 +271,77 @@ func (r *replenishBatchResult) SupplierPayload() []map[string]interface{} {
 // replenishMu 串行化补号运行，避免手动触发、后台轮询与推送并发购买。
 var replenishMu sync.Mutex
 
-// runReplenishOnce 手动补号一次：所有启用的供应商各提取 count 个 Key。
+// runReplenishOnce 手动补号一次。
+//
+// provider 为空时所有启用的供应商各提取 count 个 Key；非空时只动那一家。
 // count <= 0 时使用配置的 BatchCount。
-func (h *Handler) runReplenishOnce(count int) (*replenishBatchResult, error) {
+//
+// 单一入口而非两个导出函数：调用方（HTTP handler、后台轮询）只需要决定「补谁」，
+// 不必关心两条路径在加锁与结果聚合上的差异。
+func (h *Handler) runReplenishOnce(provider string, count int) (*replenishBatchResult, error) {
+	if strings.TrimSpace(provider) != "" {
+		return h.runReplenishProviderOnce(provider, count)
+	}
 	replenishMu.Lock()
 	defer replenishMu.Unlock()
 	return h.replenishAll(count)
+}
+
+// runReplenishProviderOnce 只让指定的一家供应商提取一批。
+//
+// 与 runReplenishOnce 的区别不只是「少买几家」：面板上每家一张卡片、各自一个补号
+// 按钮，用户点某一家就应当只动那一家的余额。此前面板只有一个全局按钮，想给某家
+// 补号必须先把其余几家关掉再打开，既繁琐又容易忘记恢复。
+//
+// 返回值仍是 replenishBatchResult（只含一家的结果），这样 HTTP 层与前端可以复用
+// 同一套响应结构与渲染逻辑，不必为单家再造一份。
+func (h *Handler) runReplenishProviderOnce(provider string, count int) (*replenishBatchResult, error) {
+	key := config.NormalizeReplenishProvider(provider)
+	if key == "" {
+		return nil, fmt.Errorf("unknown replenish provider: %s", provider)
+	}
+
+	replenishMu.Lock()
+	defer replenishMu.Unlock()
+
+	rc := config.GetReplenishConfig()
+	sc := rc.Supplier(key)
+	// 未启用或没填密钥的家直接拒绝，而不是返回一个空结果：用户明确点了这一家的
+	// 按钮，静默什么都不做会被当成「点了没反应」。
+	if !sc.Enabled {
+		return nil, fmt.Errorf("supplier %s is disabled", key)
+	}
+	if strings.TrimSpace(sc.ApiKey) == "" {
+		return nil, fmt.Errorf("supplier %s has no api key configured", key)
+	}
+
+	if count <= 0 {
+		count = rc.BatchCount
+	}
+	if count <= 0 {
+		return nil, errors.New("purchase count must be positive")
+	}
+
+	res, err := h.replenishOneProvider(key, rc, supplierClaimRequest{Count: count})
+	if err != nil {
+		// 单家补号失败即整次操作失败，直接返回 error 让 HTTP 层回 502 并把原因
+		// 透给前端。这与「多家并行」不同：那里一家失败其余仍可能成功，必须返回
+		// 部分成功的结果；这里没有「部分」可言，回一个 purchased=0 的成功结构
+		// 只会让用户以为点了没反应。
+		logger.Warnf("[Replenish] manual provider=%s failed: %v", key, err)
+		return nil, err
+	}
+
+	batch := &replenishBatchResult{
+		Errors:    map[string]string{},
+		Attempted: 1,
+		Results:   []*replenishResult{res},
+		Purchased: res.Purchased,
+		Imported:  res.Imported,
+		Skipped:   res.Skipped,
+	}
+	batch.Summary = summarizeBatch(batch)
+	return batch, nil
 }
 
 // replenishAll 让每个启用的供应商各买一批，返回汇总结果。调用方需持有 replenishMu。
@@ -390,9 +455,24 @@ func (h *Handler) claimAndImport(client replenishSupplier, rc config.ReplenishCo
 		importRegion = z
 	}
 
+	// 单 Key 成本：优先用上游自报的实际扣费均摊，回落到该家配置的单价。
+	//
+	// 均摊而非直接取配置单价，是因为阶梯定价的供应商实际成交价可能与配置值不同
+	// （量大时更便宜）。用实际扣费才是这批号真正的成本；配置单价只是没有 spent
+	// 字段的供应商的近似值。
+	unitCost := rc.Supplier(provider).KeyPrice
+	if claim.Spent > 0 {
+		if n := claim.PurchasedCount(); n > 0 {
+			unitCost = claim.Spent / float64(n)
+		}
+	}
+
 	// 交给既有的批量导入逻辑（去重 + 区域探测 + 信息刷新 + 池重载）。
+	// 成本随导入一并写入每个账号：成本必须绑定到 Key 本身，因为供应商会调价，
+	// 用「当前配置单价」回算历史账号的成本会让过去的利润随调价而变动。
 	if len(claim.Keys) > 0 {
-		summary := h.ImportApiKeys(strings.Join(claim.Keys, "\n"), importRegion, "", "")
+		summary := h.ImportApiKeysWithCost(
+			strings.Join(claim.Keys, "\n"), importRegion, "", "", unitCost)
 		res.Imported = summary.Imported
 		res.Skipped = summary.Skipped
 	}
@@ -503,7 +583,9 @@ func (h *Handler) maybeReplenish() {
 	logger.Infof("[Replenish] %s; replenishing %d from each of %d provider(s): %s",
 		reason, count, len(providers), strings.Join(providers, ","))
 
-	batch, err := h.runReplenishOnce(count)
+	// provider 传空串 = 所有启用的供应商各买一批。自动轮询必须保持这个语义：
+	// 只补一家的话，那家的 Key 被封时池子会再次见底。
+	batch, err := h.runReplenishOnce("", count)
 	now := time.Now().Unix()
 	if err != nil {
 		_ = config.RecordReplenishRun(now, "", err.Error())

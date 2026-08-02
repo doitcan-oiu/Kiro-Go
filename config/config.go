@@ -194,6 +194,35 @@ type Account struct {
 	BanReason string `json:"banReason,omitempty"` // Reason for ban/suspension
 	BanTime   int64  `json:"banTime,omitempty"`   // Timestamp when ban was detected
 
+	// 生命周期时间戳（Unix 秒）。面板用它们展示「添加时间」与「存活时长」。
+	//
+	// CreatedAt 由 normalizeNewAccount 在导入时统一补齐，因此九种导入方式无需各自
+	// 记得赋值。为已有配置里缺失该字段的账号回填 0 而不是当前时间：把老账号显示成
+	// 「刚刚添加」是错的，前端遇到 0 会显示「—」表示未知。
+	CreatedAt int64 `json:"createdAt,omitempty"`
+
+	// Cost 是这个 Key 的采购成本（美元），利润 = 收入 − Cost。
+	//
+	// 值在导入时从供应商配置的 KeyPrice 复制过来，之后不再跟随供应商价格变动。
+	// 这是刻意的：供应商单价会调整，若算利润时反查「当前」单价，改一次价格就会
+	// 追溯性地改写全部历史账号的成本，昨天的利润今天会变成另一个数。每个 Key
+	// 携带自己「入库时」的价格，历史才是稳定的。
+	//
+	// 0 表示成本未知（手工导入、或导入时供应商未配价格），面板据此显示「—」而
+	// 不是把利润当成等于收入。CostSource 记录它的来路，便于排查。
+	Cost float64 `json:"cost,omitempty"`
+
+	// CostSource 说明 Cost 的来源：供应商标识（如 "kiroceo"）表示补号时自动带入，
+	// "manual" 表示用户在详情页手工填写，空表示未设置。
+	CostSource string `json:"costSource,omitempty"`
+
+	// DisabledAt 是最近一次由启用转为禁用的时刻，重新启用时清零。
+	//
+	// 不复用 BanTime：BanTime 语义是「检测到封禁」，由自动封禁与人工禁用共同写入，
+	// 且 SetAccountBanStatus 在账号本已禁用时也会刷新它。存活时长需要的是「这次禁用
+	// 从何时开始」，两者混用会让时长随每次状态刷新而缩短。
+	DisabledAt int64 `json:"disabledAt,omitempty"`
+
 	// Subscription information
 	SubscriptionType  string `json:"subscriptionType,omitempty"`  // Tier: FREE, PRO, PRO_PLUS, or POWER
 	SubscriptionTitle string `json:"subscriptionTitle,omitempty"` // Human-readable subscription name
@@ -219,6 +248,16 @@ type Account struct {
 	LastUsed     int64   `json:"lastUsed,omitempty"`     // Last request timestamp
 	TotalTokens  int     `json:"totalTokens,omitempty"`  // Cumulative tokens processed
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
+
+	// Revenue 是该账号累计产生的收入（美元），已乘以全局倍率。
+	//
+	// 累加而非按需回算：回算需要扫描全部历史日志（jsonl 只追加、永不轮转，
+	// 百万请求量级即数百 MB），每次打开面板都扫一遍不可行。累加的代价是倍率
+	// 调整不会追溯历史——这是刻意的取舍，且更符合直觉：已经赚到的钱不该因为
+	// 之后改了加价策略而变化。
+	//
+	// 利润 = Revenue − Cost，两者同为美元（见 Cost 字段说明）。
+	Revenue float64 `json:"revenue,omitempty"`
 }
 
 // IsApiKeyCredential reports whether the account authenticates with a Kiro API
@@ -359,9 +398,9 @@ type Config struct {
 
 	// Region defaults for accounts that omit per-account region/authRegion/apiRegion.
 	// Defaults to "us-east-1" when empty (see GetGlobalRegion* / Account.Effective*Region).
-	Region        string `json:"region,omitempty"`
-	AuthRegion    string `json:"authRegion,omitempty"`
-	ApiRegion     string `json:"apiRegion,omitempty"`
+	Region     string `json:"region,omitempty"`
+	AuthRegion string `json:"authRegion,omitempty"`
+	ApiRegion  string `json:"apiRegion,omitempty"`
 	// MaxPayloadBytes caps the serialized Kiro request body before upstream rejects
 	// it as oversized. <=0 means use DefaultMaxPayloadBytes.
 	MaxPayloadBytes int `json:"maxPayloadBytes,omitempty"`
@@ -430,6 +469,21 @@ type Config struct {
 	// WebhookURL receives async best-effort POST notifications on account ban /
 	// key over-limit events. Payload carries id/name/reason only — never tokens.
 	WebhookURL string `json:"webhookUrl,omitempty"`
+
+	// ProfitMultiplier 是收入倍率：按模型单价算出的原始金额再乘以它，得到「收入」。
+	//
+	// 面板上的利润 = 收入 − 成本，成本是每个 Key 的采购单价（Account.Cost）。
+	// 倍率全局共用一个值（而非按模型或按 Key 配），因为它表达的是转售加价策略，
+	// 与具体模型无关。
+	//
+	// 用指针而非裸 float64，是为了让 POST /settings 的部分合并语义成立：
+	// 字段缺省表示「保持原值不变」，而 0 值在裸 float64 上无法与缺省区分——
+	// 那会导致任何一次只改别的设置的保存都把倍率悄悄重置。
+	//
+	// 合法取值为正数。0 与负数在写入时即被拒绝（见 UpdateProfitMultiplier）：
+	// 0 会让所有收入恒为 0、面板上只剩负的采购成本，看起来像功能坏了；
+	// 负数会让利润随用量增加而下降，两者都不对应任何真实计费模型。
+	ProfitMultiplier *float64 `json:"profitMultiplier,omitempty"`
 
 	// Replenish holds the online account-replenishment (在线补号) configuration:
 	// supplier connection info plus the auto-replenish policy and last-run state.
@@ -754,6 +808,25 @@ func GetCredentialHealth() CredentialHealth {
 	return h
 }
 
+// normalizeNewAccount 补齐新账号的导入期字段。
+//
+// 集中在这里而不是散落到九种导入方式各自的处理函数里：入口有 8 处调用
+// AddAccount/AddAccounts，逐个赋值必然会漏掉一两处，而漏掉的表现是「某种导入方式
+// 进来的账号添加时间为空」——一个要等到用户抱怨才会发现的缺陷。
+//
+// 只在字段为零值时填充，因此不会覆盖调用方显式指定的值（例如从旧配置迁移导入时
+// 想保留原始添加时间）。
+func normalizeNewAccount(account Account, now int64) Account {
+	if account.CreatedAt == 0 {
+		account.CreatedAt = now
+	}
+	// 导入时即为禁用状态的账号（例如批量导入后默认不启用），存活计时从导入即停止。
+	if !account.Enabled && account.DisabledAt == 0 {
+		account.DisabledAt = now
+	}
+	return account
+}
+
 func AddAccount(account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
@@ -768,15 +841,53 @@ func AddAccount(account Account) error {
 			}
 		}
 	}
-	cfg.Accounts = append(cfg.Accounts, account)
+	cfg.Accounts = append(cfg.Accounts, normalizeNewAccount(account, time.Now().Unix()))
 	return Save()
 }
 
+// UpdateAccount 整体替换一个账号。
+//
+// 生命周期时间戳在这里做两件事，原因是本函数是「整struct 覆盖」语义，而调用方
+// （管理面板的 PUT /accounts/{id}）只关心 enabled/weight/tags 这类字段：
+//
+//  1. CreatedAt 以磁盘上的既有值为准。调用方传来的 struct 若因任何原因丢了该字段，
+//     直接覆盖就会把「添加时间」永久清零，而这是不可恢复的历史信息。
+//  2. DisabledAt 按 enabled 的跳变维护。人工在面板上禁用账号走的正是这条路径，
+//     若不在此处理，存活时长就只在自动封禁时才会停止计时。
 func UpdateAccount(id string, account Account) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
+	now := time.Now().Unix()
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
+			// 添加时间始终沿用磁盘上的既有值，调用方传什么都不作数：本函数是
+			// 整体替换（面板的 PUT /accounts/{id} 会把整个结构写回），若采信入参
+			// 就会被前端漏传的字段清零。
+			//
+			// 历史数据缺失（CreatedAt==0）时保持 0，不回填 now：0 的语义是「未知」，
+			// 回填等于宣称每个老账号都是刚刚添加的，而这恰恰会在一次无关的编辑
+			// （改权重、改标签）之后突然发生，比留空更容易误导。前端遇到 0 显示「—」。
+			account.CreatedAt = a.CreatedAt
+
+			// Revenue 同理，但理由更强：它由请求路径异步累加（pool.AddRevenue →
+			// UpdateAccountRevenue），而本函数是面板 PUT 的整体替换。若采信入参，
+			// 「读取账号 → 用户改个权重 → 写回」这段时间内完成的请求所产生的收入
+			// 会被静默回滚。金额数据不允许有这种丢失，因此始终以磁盘值为准。
+			// 需要改收入只能走 UpdateAccountRevenue，不经由本函数。
+			account.Revenue = a.Revenue
+
+			switch {
+			case a.Enabled && !account.Enabled:
+				// 启用 → 禁用：开始停表。
+				account.DisabledAt = now
+			case !a.Enabled && account.Enabled:
+				// 禁用 → 启用：重新计时。
+				account.DisabledAt = 0
+			default:
+				// 状态未变：保留原有时刻，避免每次保存都把禁用起点往后推。
+				account.DisabledAt = a.DisabledAt
+			}
+
 			cfg.Accounts[i] = account
 			return Save()
 		}
@@ -817,14 +928,22 @@ func SetAccountEnabled(id string, enabled bool) error {
 	defer cfgLock.Unlock()
 	for i, a := range cfg.Accounts {
 		if a.ID == id {
+			wasEnabled := cfg.Accounts[i].Enabled
 			cfg.Accounts[i].Enabled = enabled
 			if enabled {
 				cfg.Accounts[i].BanStatus = "ACTIVE"
 				cfg.Accounts[i].BanReason = ""
 				cfg.Accounts[i].BanTime = 0
+				// 重新启用：存活计时重新开始，清掉上一次的禁用时刻。
+				cfg.Accounts[i].DisabledAt = 0
 			} else {
 				cfg.Accounts[i].BanStatus = "DISABLED"
 				cfg.Accounts[i].BanTime = time.Now().Unix()
+				// 仅在「由启用转为禁用」时打点。已经是禁用状态时不刷新，否则每次
+				// 状态复写都会把禁用时刻往后推，存活时长越看越短。
+				if wasEnabled || cfg.Accounts[i].DisabledAt == 0 {
+					cfg.Accounts[i].DisabledAt = time.Now().Unix()
+				}
 			}
 			return Save()
 		}
@@ -842,7 +961,17 @@ func SetAccountBanStatus(id, status, reason string) error {
 			cfg.Accounts[i].BanStatus = status
 			cfg.Accounts[i].BanReason = reason
 			cfg.Accounts[i].BanTime = time.Now().Unix()
+			// 条件保持与改动前一致（仅 BANNED / DISABLED 会强制下线）。
+			// SUSPENDED 是 429 自动隔离用的临时状态，由 applyAutoRestoreLocked 到期
+			// 自动恢复；把它加进来会让隔离变成永久禁用，破坏自动恢复路径。
 			if status == "BANNED" || status == "DISABLED" {
+				// 只在「本次由启用转为禁用」时打点。本函数会被重复调用（例如同一账号
+				// 连续命中配额错误），若每次都刷新 DisabledAt，面板上的存活时长会随
+				// 每次刷新而不断缩短。判据用 Enabled 而非 DisabledAt==0，因为后者对
+				// 「禁用→改封禁原因」的场景同样应保持不变。
+				if cfg.Accounts[i].Enabled {
+					cfg.Accounts[i].DisabledAt = cfg.Accounts[i].BanTime
+				}
 				cfg.Accounts[i].Enabled = false
 			}
 			return Save()
@@ -878,6 +1007,8 @@ func applyAutoRestoreLocked() bool {
 			cfg.Accounts[i].BanStatus = "ACTIVE"
 			cfg.Accounts[i].BanReason = ""
 			cfg.Accounts[i].BanTime = 0
+			// 恢复即重新开始计时；留着旧值会让面板显示一个早已结束的禁用区间。
+			cfg.Accounts[i].DisabledAt = 0
 			changed = true
 		}
 	}
@@ -911,6 +1042,10 @@ func AddAccounts(accounts []Account) (added int, skipped int, err error) {
 		}
 	}
 
+	// 整批共用同一个 now：同一次导入的账号「添加时间」应当一致，逐个取 time.Now()
+	// 会让一批账号的时间戳相差几毫秒，排序时顺序不稳定。
+	now := time.Now().Unix()
+
 	for _, a := range accounts {
 		if a.RefreshToken == "" {
 			skipped++
@@ -921,7 +1056,7 @@ func AddAccounts(accounts []Account) (added int, skipped int, err error) {
 			continue
 		}
 		seen[a.RefreshToken] = struct{}{}
-		cfg.Accounts = append(cfg.Accounts, a)
+		cfg.Accounts = append(cfg.Accounts, normalizeNewAccount(a, now))
 		added++
 	}
 
@@ -1600,4 +1735,116 @@ func GetKiroClientConfig(accountID string) KiroClientConfig {
 		SystemVersion: systemVersion,
 		NodeVersion:   nodeVersion,
 	}
+}
+
+// ==================== 利润核算 ====================
+
+// DefaultProfitMultiplier 是收入倍率的默认值。
+//
+// 取 1.0 表示「按模型官方单价原样计算收入」。默认不放大也不缩小：任何非 1 的
+// 默认值都会让首次启用该功能的用户看到一个无法解释的数字。
+const DefaultProfitMultiplier = 1.0
+
+// GetProfitMultiplier 返回全局收入倍率。
+//
+// 未设置或非正数时回落到 1.0。不允许 0 或负数：0 会让所有收入恒为 0（看起来
+// 像功能坏了），负数会让利润随用量增加而下降，两者都不是任何真实计费模型。
+func GetProfitMultiplier() float64 {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	// nil 表示从未配置；<=0 表示历史配置里存了非法值（旧版本或手工编辑过
+	// config.json）。两种情况都回落到默认值，绝不把 0 当成有效倍率使用。
+	if cfg == nil || cfg.ProfitMultiplier == nil || *cfg.ProfitMultiplier <= 0 {
+		return DefaultProfitMultiplier
+	}
+	return *cfg.ProfitMultiplier
+}
+
+// UpdateProfitMultiplier 更新全局收入倍率并持久化。
+// 非正数被拒绝而不是静默夹取，让面板能明确提示「这个值不合法」。
+func UpdateProfitMultiplier(m float64) error {
+	if m <= 0 {
+		return errors.New("profit multiplier must be positive")
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	// 取地址存入：指针非 nil 即表示「用户配置过」，与「从未配置」区分开。
+	cfg.ProfitMultiplier = &m
+	return Save()
+}
+
+// UpdateAccountCost 设置单个账号的采购成本（美元）并持久化。
+//
+// 成本可变动（供应商调价、或补录历史成本），因此提供独立的更新入口而不是只在
+// 导入时写一次。负数被拒绝：负成本会让利润虚高，属于明显的输入错误。
+func UpdateAccountCost(id string, cost float64) error {
+	if cost < 0 {
+		return errors.New("cost must not be negative")
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].Cost = cost
+			return Save()
+		}
+	}
+	return errors.New("account not found: " + id)
+}
+
+// SetAccountsCost 批量设置成本，用于补号导入后把该批次的单价写到每个新账号上。
+// 一次 Save()，避免逐个写盘的 O(n²) 放大。
+func SetAccountsCost(ids []string, cost float64) error {
+	if cost < 0 {
+		return errors.New("cost must not be negative")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	changed := false
+	for i := range cfg.Accounts {
+		if _, ok := want[cfg.Accounts[i].ID]; ok {
+			cfg.Accounts[i].Cost = cost
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return Save()
+}
+
+// UpdateAccountRevenue 持久化账号的累计收入。
+//
+// 与 UpdateAccountStats 分开：收入只在成功请求后产生，而 UpdateAccountStats
+// 也被失败路径调用。合并会让失败请求也触发一次收入写盘，纯属浪费。
+func UpdateAccountRevenue(id string, revenue float64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg == nil {
+		return errors.New("config not initialized")
+	}
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].Revenue = revenue
+			return Save()
+		}
+	}
+	return nil
 }

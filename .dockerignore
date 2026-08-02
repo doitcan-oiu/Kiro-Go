@@ -8,3 +8,9 @@ docker-compose.yml
 README.md
 README_CN.md
 *.log
+
+# Admin panel: the image builds the bundle in its own Node stage, so the host's
+# node_modules (platform-specific binaries) and dist (stale) must stay out of
+# the build context. Sending them would also bloat the context by ~100 MB.
+web/node_modules
+web/dist

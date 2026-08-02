@@ -147,6 +147,18 @@ type SupplierConfig struct {
 	// 因为 new_keys 是该批次可提取上限，超量请求必然失败。
 	WebhookCount int `json:"webhookCount,omitempty"`
 
+	// KeyPrice 是该家单个 Key 的采购成本（美元）。
+	//
+	// 由用户在面板上按家填写，而不是从供应商接口读：各家的「价格」语义不统一
+	// （有的返回积分、有的是阶梯价区间），且随活动变动。用户填的是自己实际支付
+	// 的单价，这是唯一可信的成本来源。
+	//
+	// 导入账号时该值会被**复制**到 Account.Cost 上，而不是让账号引用它。这一点
+	// 是刚性的：单价会变动（涨价、换套餐），若账号只存供应商标识、算利润时反查
+	// 当前单价，那么改一次价格会追溯性地改写所有历史账号的成本，历史利润随之
+	// 失真。复制到账号上之后，每个 Key 永久携带它「当时的」采购价。
+	KeyPrice float64 `json:"keyPrice,omitempty"`
+
 	// WebhookSecret 是该家专属回调路径 /replenish/webhook/<provider>/<secret>
 	// 内嵌的随机密钥。每家独立，便于单独轮换而不影响另一家。
 	WebhookSecret string `json:"webhookSecret,omitempty"`
@@ -406,6 +418,10 @@ type SupplierUpdate struct {
 	ApiKey       *string
 	Zone         *string
 	WebhookCount *int
+	// KeyPrice 是该家单个 Key 的采购单价（美元）。
+	// 用指针以区分「本次请求没带这个字段」与「显式设为 0」：前者保持原值，
+	// 后者表示这家的号是免费的（例如自有额度），成本按 0 计。
+	KeyPrice *float64
 }
 
 // UpdateReplenishSettings 更新补号的策略字段与各家供应商配置（不含运行态），
@@ -475,6 +491,15 @@ func UpdateReplenishSettings(rc ReplenishConfig, suppliers map[string]SupplierUp
 				n = 0
 			}
 			sc.WebhookCount = n
+		}
+		if up.KeyPrice != nil {
+			// 负单价没有任何真实含义，只能来自输入错误；夹到 0 而不是原样存下，
+			// 否则成本为负会让利润凭空变高。
+			price := *up.KeyPrice
+			if price < 0 {
+				price = 0
+			}
+			sc.KeyPrice = price
 		}
 		cfg.Replenish.Suppliers[key] = sc
 	}
