@@ -15,6 +15,7 @@ import {
   logsRevenue,
   percentile,
   poolProfit,
+  profitTone,
   requestsPerMinute,
   successRate,
   trafficByModel,
@@ -393,6 +394,34 @@ test('accountLifetime: clock skew clamps to zero instead of going negative', () 
   assert.equal(life.seconds, 0)
 })
 
+test('accountLifetime: seconds is never NaN, even when nowMs is the wrong type', () => {
+  // The regression this pins: AccountCard called accountLifetime(acc, { nowMs })
+  // instead of accountLifetime(acc, nowMs). The old code produced
+  // { seconds: NaN }, which is neither null (so the caller's "—" branch was
+  // skipped) nor a usable number (so the formatter's `|| 0` turned it into
+  // "0秒"). A wrong argument type must degrade to "unknown", not to zero.
+  const acc = { enabled: true, createdAt: Math.floor((NOW - 90 * MIN) / 1000) }
+  assert.equal(accountLifetime(acc, { nowMs: NOW }), null)
+  assert.equal(accountLifetime(acc, 'not-a-number'), null)
+  assert.equal(accountLifetime(acc, NaN), null)
+
+  // The valid call still works, and seconds stays finite.
+  const life = accountLifetime(acc, NOW)
+  assert.equal(Number.isFinite(life.seconds), true)
+  assert.equal(life.seconds, 90 * 60)
+})
+
+test('accountLifetime: a stopped clock ignores nowMs entirely', () => {
+  // disabledAt fixes both ends of the interval, so a bad nowMs cannot corrupt
+  // the result — it is never read on this path.
+  const created = Math.floor((NOW - 10 * MIN) / 1000)
+  const disabled = Math.floor((NOW - 4 * MIN) / 1000)
+  const acc = { enabled: false, createdAt: created, disabledAt: disabled }
+  const life = accountLifetime(acc, { nowMs: NOW })
+  assert.equal(life.running, false)
+  assert.equal(life.seconds, 6 * 60)
+})
+
 // ── profit ───────────────────────────────────────────────────────────────────
 // 利润是「收入 − 成本」，两个数都可能缺失。核心断言是「缺数据」与「零利润」必须
 // 可区分：把全新账号显示成 $0.00 会被读成「跑过但没赚钱」，而真相是还没跑过。
@@ -466,4 +495,46 @@ test('logsRevenue: unpriced entries are counted so the UI can warn', () => {
   const got = logsRevenue([{ revenueUnpriced: true }, { revenueUnpriced: true }])
   assert.equal(got.revenue, 0)
   assert.equal(got.unpricedCount, 2, 'the count is what lets the panel surface a stale price table')
+})
+
+// ── profitTone ───────────────────────────────────────────────────────────────
+// Shared by the account card, the detail modal and the dashboard. The whole
+// point of extracting it is that the same figure cannot end up a different
+// colour in two places, so the boundary cases are what matter here.
+
+test('profitTone: profit is success, loss is error', () => {
+  assert.equal(profitTone({ profit: 12.5, hasData: true }), 'success')
+  assert.equal(profitTone({ profit: -3, hasData: true }), 'error')
+})
+
+test('profitTone: break-even is neutral, not green', () => {
+  // Exactly 0 earned nothing; colouring it green would read as a profit.
+  assert.equal(profitTone({ profit: 0, hasData: true }), null)
+})
+
+test('profitTone: no data is neutral', () => {
+  // The value renders as "—" in this case; tinting a placeholder is meaningless.
+  assert.equal(profitTone({ profit: 0, hasData: false }), null)
+  assert.equal(profitTone({ profit: 99, hasData: false }), null)
+  assert.equal(profitTone(null), null)
+  assert.equal(profitTone(undefined), null)
+})
+
+test('profitTone: non-finite profit is neutral rather than green', () => {
+  // Neither value can arise from real data: revenue and cost are both finite, so
+  // their difference is too. Both mean the input is corrupt, and a corrupt figure
+  // must not be painted as a confident green profit — that is the same class of
+  // mistake as formatDurationCompact swallowing NaN into "0秒".
+  assert.equal(profitTone({ profit: NaN, hasData: true }), null)
+  assert.equal(profitTone({ profit: Infinity, hasData: true }), null)
+})
+
+test('profitTone: agrees with accountProfit and poolProfit outputs', () => {
+  // Guards the real call shape: the helper takes the whole result object, so a
+  // field rename in either producer must surface here.
+  assert.equal(profitTone(accountProfit({ revenue: 10, cost: 4 })), 'success')
+  assert.equal(profitTone(accountProfit({ revenue: 1, cost: 4 })), 'error')
+  assert.equal(profitTone(accountProfit({})), null)
+  assert.equal(profitTone(poolProfit([{ revenue: 10, cost: 1 }])), 'success')
+  assert.equal(profitTone(poolProfit([])), null)
 })

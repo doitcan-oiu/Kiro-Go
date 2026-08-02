@@ -25,7 +25,7 @@ import {
   maskEmail,
   toFixed,
 } from '@/lib/format'
-import { accountLifetime, accountProfit } from '@/lib/stats'
+import { accountLifetime, accountProfit, profitTone } from '@/lib/stats'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseCheckbox from '@/components/ui/BaseCheckbox.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
@@ -172,9 +172,25 @@ const trialLabel = computed(() => {
  */
 const profit = computed(() => accountProfit(a.value))
 
-const lifetime = computed(() =>
-  accountLifetime(a.value, { nowMs: Date.now() }),
-)
+// accountLifetime 的第二个参数是**毫秒数**，不是选项对象。传对象会让内部的
+// `endMs - created * 1000` 得到 NaN，而 NaN 既不等于 null（卡片的「—」分支判的是
+// null），又会被 formatDurationCompact 的 `Number(x) || 0` 吞成 0 —— 于是每个账号
+// 的存活时长都显示成「0秒」，看起来像功能没生效而不像传参错误。
+const lifetime = computed(() => accountLifetime(a.value, Date.now()))
+
+/**
+ * 指标值的着色。tone 为 null / 未知值时回落到中性色。
+ *
+ * 显式白名单而不是 `text-${tone}` 拼接：Tailwind 是静态扫描类名的，拼出来的类名
+ * 不会出现在产物里，颜色会静默失效。
+ */
+const TONE_CLASS = {
+  success: 'text-success',
+  error: 'text-error',
+}
+function metricToneClass(tone) {
+  return TONE_CLASS[tone] || 'text-txt'
+}
 
 /**
  * 指标网格（2 列 × 3 行）。六项固定顺序，缺数据显示「—」而不是 0：
@@ -208,8 +224,8 @@ const metrics = computed(() => {
       hint: profit.value.hasData
         ? `${t('accounts.revenue')} ${formatUsd(profit.value.revenue)} − ${t('accounts.cost')} ${formatUsd(profit.value.cost)}`
         : t('accounts.profitHint'),
-      // 亏损标红：三栏扫视时颜色比数字更快被注意到。
-      tone: profit.value.hasData && profit.value.profit < 0 ? 'error' : null,
+      // 盈利绿、亏损红：扫视一屏几十张卡片时，颜色比数字更快被注意到。
+      tone: profitTone(profit.value),
     },
     {
       key: 'added',
@@ -219,7 +235,9 @@ const metrics = computed(() => {
     {
       key: 'alive',
       label: inactive.value ? t('accounts.aliveStopped') : t('accounts.alive'),
-      value: lifetime.value === null ? '—' : formatDurationCompact(lifetime.value),
+      // accountLifetime 返回 {seconds, running}，格式化函数要的是秒数。
+      // 直接把对象传进去会走 Number(obj) → NaN → `|| 0`，恒定显示「0秒」。
+      value: lifetime.value === null ? '—' : formatDurationCompact(lifetime.value.seconds),
       hint: inactive.value ? t('accounts.aliveStoppedHint') : t('accounts.aliveHint'),
     },
   ]
@@ -300,7 +318,7 @@ const metrics = computed(() => {
         </dt>
         <dd
           class="tnum mt-0.5 truncate text-body-sm"
-          :class="m.tone === 'error' ? 'text-error' : 'text-txt'"
+          :class="metricToneClass(m.tone)"
           :title="m.hint || String(m.value)"
         >
           {{ m.value }}

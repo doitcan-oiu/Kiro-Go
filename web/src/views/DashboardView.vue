@@ -14,7 +14,7 @@ import { PhCurrencyDollar, PhFlowArrow, PhGauge, PhUsers } from '@phosphor-icons
 import { useI18n } from '@/lib/i18n'
 import { useDataStore } from '@/stores/data'
 import { formatNumber, formatUsd, toFixed } from '@/lib/format'
-import { poolProfit, requestsPerMinute, successRate } from '@/lib/stats'
+import { poolProfit, profitTone, requestsPerMinute, successRate } from '@/lib/stats'
 import StatCard from '@/components/ui/StatCard.vue'
 import TtftChart from '@/components/dashboard/TtftChart.vue'
 import ModelTrafficChart from '@/components/dashboard/ModelTrafficChart.vue'
@@ -82,7 +82,10 @@ const cards = computed(() => [
       ? `${t('dashboard.revenue')} ${formatUsd(profit.value.revenue)} · ${t('dashboard.cost')} ${formatUsd(profit.value.cost)}`
       : t('dashboard.profitPlaceholder'),
     icon: PhCurrencyDollar,
-    tone: profit.value.hasData && profit.value.profit < 0 ? 'error' : 'accent',
+    // 盈利绿、亏损红、保本或无数据中性。与账号卡片共用 profitTone，避免同一个
+    // 口径的数字在两个页面显示成不同颜色。原来这里正数用的是 accent（品牌绿），
+    // 与语义色 success 是两个不同的色值，卡片和仪表盘并排看时会显得像两种状态。
+    tone: profitTone(profit.value) ?? 'neutral',
   },
 ])
 </script>

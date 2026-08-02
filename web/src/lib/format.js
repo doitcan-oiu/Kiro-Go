@@ -141,11 +141,18 @@ export function todayStamp() {
  * 而账号存活动辄数天，`3天 7时 12分 45秒` 在卡片里既占地方又没人关心后两位。
  * 这里只保留最高两个量级，不足一分钟才显示秒。
  *
- * @param {number|null} seconds 秒数；null/负数返回占位符
+ * 非数值（null / undefined / NaN / 对象）一律返回占位符，而不是折算成 0。
+ * 这一点是刚性的：这里原来写的是 `Number(seconds) || 0`，于是把
+ * `accountLifetime()` 返回的 `{seconds, running}` 对象整个传进来时，NaN 被静默
+ * 吞成 0，卡片上每个账号都显示「0秒」。传参错误伪装成了一个看起来合理的数值，
+ * 比直接显示「—」难查得多——后者一眼就能看出是「没算出来」。
+ *
+ * @param {number|null} seconds 秒数；非数值或负数返回占位符
  */
 export function formatDurationCompact(seconds) {
-  if (seconds === null || seconds === undefined) return '—'
-  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const n = Number(seconds)
+  if (seconds === null || seconds === undefined || !Number.isFinite(n)) return '—'
+  const total = Math.max(0, Math.floor(n))
   const zh = lang.value === 'zh'
   const d = Math.floor(total / 86400)
   const h = Math.floor((total % 86400) / 3600)

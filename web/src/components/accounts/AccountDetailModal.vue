@@ -9,7 +9,7 @@ import { useI18n } from '@/lib/i18n'
 import { api } from '@/lib/api'
 import { toast } from '@/lib/toast'
 import { formatDateTime, formatNum, formatUsd, maskEmail, toFixed } from '@/lib/format'
-import { accountProfit } from '@/lib/stats'
+import { accountProfit, profitTone } from '@/lib/stats'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseField from '@/components/ui/BaseField.vue'
@@ -411,7 +411,9 @@ async function refreshModelCache() {
             <dt class="text-caption-sm text-txt-tertiary">{{ t('detail.profit') }}</dt>
             <dd
               class="tnum mt-0.5 truncate text-body-sm"
-              :class="profit.hasData && profit.profit < 0 ? 'text-error' : 'text-txt'"
+              :class="
+                { success: 'text-success', error: 'text-error' }[profitTone(profit)] || 'text-txt'
+              "
             >
               {{ profit.hasData ? formatUsd(profit.profit) : '—' }}
             </dd>

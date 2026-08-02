@@ -309,6 +309,12 @@ export function accountThroughput(logs, { windowMinutes = 5, nowMs = Date.now() 
  * 返回 null 表示无法计算——`createdAt` 缺失（历史数据）时不猜测，由前端显示「—」。
  * 返回 0 与返回 null 是两件事：前者表示刚导入，后者表示不知道。
  *
+ * `seconds` 保证是有限数。第二个参数是**毫秒数**，不是选项对象；传错类型时返回
+ * null（显示「—」）而不是 `{seconds: NaN}`。曾经正是后者让调用方的传参错误伪装成
+ * 「0秒」：NaN 不等于 null，于是绕过了调用处的「—」分支，又被格式化函数吞成 0。
+ *
+ * @param {object} account
+ * @param {number} [nowMs] 当前时刻（毫秒）
  * @returns {{seconds:number, running:boolean}|null}
  */
 export function accountLifetime(account, nowMs = Date.now()) {
@@ -318,7 +324,10 @@ export function accountLifetime(account, nowMs = Date.now()) {
   const disabledAt = Number(account?.disabledAt)
   const stopped = !account?.enabled && Number.isFinite(disabledAt) && disabledAt > 0
 
-  const endMs = stopped ? disabledAt * 1000 : nowMs
+  const now = Number(nowMs)
+  if (!stopped && !Number.isFinite(now)) return null
+
+  const endMs = stopped ? disabledAt * 1000 : now
   const seconds = Math.max(0, Math.floor((endMs - created * 1000) / 1000))
   return { seconds, running: !stopped }
 }
@@ -344,6 +353,26 @@ export function accountProfit(account) {
     profit: revenue - cost,
     hasData: revenue > 0 || cost > 0,
   }
+}
+
+/**
+ * 利润的显示色调：盈利绿、亏损红、其余中性。
+ *
+ * 抽成函数而不是在三处渲染点各写一遍三元表达式（账号卡片、账号详情、仪表盘）：
+ * 同一个数在不同位置显示成不同颜色，会让人以为两处算的不是一回事。
+ *
+ * 三档而不是两档，界线划在「严格大于 0」与「严格小于 0」：
+ *   - 恰好为 0 是保本，既没赚也没亏，染成绿色会把它读成盈利；
+ *   - `hasData` 为假时值本身显示的是「—」，给占位符上色没有意义。
+ *
+ * @param {{profit:number, hasData:boolean}} p accountProfit / poolProfit 的返回值
+ * @returns {'success'|'error'|null} null 表示不着色（中性）
+ */
+export function profitTone(p) {
+  if (!p?.hasData) return null
+  const profit = Number(p.profit)
+  if (!Number.isFinite(profit) || profit === 0) return null
+  return profit > 0 ? 'success' : 'error'
 }
 
 /**

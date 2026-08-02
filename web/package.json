@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "verify": "node scripts/verify.mjs && npm run test --silent",
     "check:glass": "node scripts/check-glass.mjs",
-    "test": "node --test scripts/stats.test.mjs",
+    "test": "node --test scripts/stats.test.mjs scripts/format.test.mjs",
     "check:breakpoints": "node scripts/check-breakpoints.mjs"
   },
   "dependencies": {
