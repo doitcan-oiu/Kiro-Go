@@ -2725,8 +2725,19 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 	// 隐藏敏感信息
 	result := make([]map[string]interface{}, len(accounts))
 	for i, a := range accounts {
-		// 获取运行时统计
-		stats := statsMap[a.ID]
+		// 运行时统计优先取池内副本（比持久化值新，最多领先一个落盘周期），但池里
+		// 只有「可调度」的账号：Reload 会剔除已禁用与超额受限的账号。
+		//
+		// 因此查不到时必须回落到持久化值，而不是沿用零值 config.Account。Go 的
+		// map 查询在键不存在时静默返回零值，直接用会把禁用账号的收入、请求数、
+		// token 数全部显示为 0 —— 成本却仍来自配置，于是面板上每个禁用账号的利润
+		// 都是 -成本，且 hasData 为真（成本非零），前端会当成一个确定的红色数字
+		// 显示而不是「—」。禁用正是淘汰耗尽 Key 的手段，这个误差会随时间单调累积，
+		// 并同样压低仪表盘的池总利润（poolProfit 有意包含禁用账号以计入成本）。
+		stats, inPool := statsMap[a.ID]
+		if !inPool {
+			stats = a
+		}
 
 		// cost/revenue 是利润核算的两个输入：成本来自持久化配置（导入时绑定到
 		// Key），收入来自运行态累计。利润本身不在后端算 —— 前端要在倍率变化时

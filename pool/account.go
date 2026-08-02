@@ -88,6 +88,19 @@ func GetPool() *AccountPool {
 // Over-quota accounts are dropped unless either the per-account upstream
 // Overages switch (OverageStatus=ENABLED) or the global AllowOverUsage
 // setting permits over-quota routing.
+//
+// 尚未落盘的收入必须被带过来。AddRevenue 存的是**累计总额**而非增量，而这里是
+// 从 config 重新读取账号——config 里的 Revenue 只到上一次 FlushRevenue 为止。
+// 若直接采信它，这个顺序会让收入静默倒退：
+//
+//	AddRevenue(5)  → 内存 5，脏值 5（持久化仍是 0）
+//	Reload()       → 内存被重置回 0
+//	AddRevenue(1)  → 内存 0+1 = 1，脏值 1
+//	FlushRevenue() → 持久化写成 1，那 5 块钱消失了
+//
+// Reload 由面板每次保存账号、导入、启用/禁用触发，是常规操作而非边缘情况；且
+// 偏差方向总是「收入变少」，看起来像生意不好而不像 bug。取两者的较大值：脏值
+// 一定 >= 持久化值（它就是从后者累加上来的），除非该账号本轮没有待落盘的收入。
 func (p *AccountPool) Reload() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -97,6 +110,9 @@ func (p *AccountPool) Reload() {
 	for _, a := range enabled {
 		if isQuotaBlocked(a, allowOverUsage) {
 			continue
+		}
+		if pending, ok := p.revenueDirty[a.ID]; ok && pending > a.Revenue {
+			a.Revenue = pending
 		}
 		w := effectiveWeight(a.Weight)
 		for j := 0; j < w; j++ {

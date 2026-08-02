@@ -150,3 +150,44 @@ func TestFlushRevenueEmptyIsCheap(t *testing.T) {
 		t.Errorf("FlushRevenue on an empty pool wrote %d, want 0", n)
 	}
 }
+
+// Reload 落在 flush 之前时不得丢失收入。
+//
+// 这是上面第 2 点（批量落盘）的代价：脏值暂存的是「累计总额」而非增量，而 Reload
+// 从 config 重建 p.accounts，config 里的 Revenue 只到上一次 flush 为止。若 Reload
+// 直接采信它，内存累计被重置为旧基线，之后的累加以总额语义覆盖掉已落盘的更高值。
+//
+// 用真实的 Reload（而非 newRevenueTestPool 注入）是本例的关键：缺陷恰好在
+// 「从 config 读」与「内存累计」的接缝上，绕过 Reload 就复现不出来。
+func TestReloadBeforeFlushDoesNotLoseRevenue(t *testing.T) {
+	if err := config.Init(filepath.Join(t.TempDir(), "config.json")); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.AddAccount(config.Account{ID: "a", Enabled: true, RefreshToken: "rt"}); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
+
+	p := &AccountPool{revenueDirty: make(map[string]float64)}
+	p.Reload()
+
+	p.AddRevenue("a", 5.0) // 内存 5，脏值 5，持久化仍是 0
+
+	// 面板保存账号、导入 Key、启停账号都会走到这里，是常规操作。
+	p.Reload()
+
+	p.FlushRevenue()       // 写出 5
+	p.AddRevenue("a", 1.0) // 必须从 5 起算，而不是从被重置的 0
+	p.FlushRevenue()
+
+	for _, a := range config.GetAccounts() {
+		if a.ID == "a" {
+			if a.Revenue != 6.0 {
+				t.Fatalf("persisted Revenue = %v, want 6.0 (5.0 + 1.0); a Reload "+
+					"landing before the flush reset the in-memory total and the next "+
+					"flush overwrote the persisted value downward", a.Revenue)
+			}
+			return
+		}
+	}
+	t.Fatal("account a missing")
+}
