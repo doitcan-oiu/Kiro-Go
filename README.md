@@ -139,7 +139,7 @@ Friendly discussion is welcome. If you run into issues, try asking Claude Code, 
 
 ## Contact
 
-Telegram: [@tutua16888](https://t.me/tutua16888)
+Telegram: [@hello1112005](https://t.me/hello1112005)
 
 ## Friend Links
 
